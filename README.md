@@ -30,7 +30,7 @@
 + Kiểm tra địa chỉ email trước khi gửi: Nếu tuỳ chọn này được tick, chương trình sẽ kiểm tra địa chỉ email có tồn tại hay không. Việc này sẽ làm kéo dài thời gian gửi mail lên, có khi gây lỗi khi máy chủ SMTP không hỗ trợ. Không khuyến khích sử dụng.
 
 - Tab TẠO NỘI DUNG TỰ ĐỘNG: Thiết lập các thông số cho mô hình để tạo nội dung tự động
-+ Máy chủ AI: Hãy chọn AI bạn có sẵn các API. Nếu muốn phí mà vẫn tốt, có thể xem xét chọn Groq, đăng ký một khoá API ở đây: https://console.groq.com/keys
++ Máy chủ AI: Hãy chọn AI bạn có sẵn các API. Nếu muốn miễn phí mà vẫn tốt, có thể xem xét chọn Groq, đăng ký một khoá API ở đây: https://console.groq.com/keys
 + Mô hình: Mỗi AI sẽ có rất nhiều mô hình, không phải tất cả chúng đều sử dụng được. Hãy thử từng cái.
 + Nhập yêu cầu cho AI: Đây là khung nhập yêu cầu mà bạn muốn AI tạo nội dung email cho bạn. Ví dụ: Tạo nội dung mail định dạng HTML, giới thiệu phần mềm AI Bulk Mailer, đây là phần mềm gửi email hàng loạt với khả năng hỗ trợ đa luồng, tạo nội dung tự động bằng nhiều mô hình AI và thu thập tất cả email trên một trang web.
 + Tự động tích hợp vào mail: Nếu tuỳ chọn này được tick, chương trình sẽ tự tạo mới nội dung email theo yêu cầu bạn đã nhập ở trên cho mỗi email. Điều này sẽ giúp nội dung email của bạn sẽ đa dạng hơn cho từng người nhận. Tuy nhiên, sẽ làm quá trình gửi mail hàng loạt diễn ra lâu hơn, vì nội dung mail sẽ được tạo mới liên tục.
