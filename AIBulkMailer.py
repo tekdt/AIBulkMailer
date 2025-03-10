@@ -8,8 +8,7 @@ import requests
 import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-# from openai import OpenAI
-import openai
+from openai import OpenAI
 import groq
 import google.generativeai as genai
 from bs4 import BeautifulSoup
@@ -22,6 +21,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 import dns.resolver
+from PyQt6.QtCore import QTimer
 
 SETTINGS_FILE = "settings.json"
 
@@ -38,7 +38,8 @@ AI_MODELS = {
     "ChatGPT": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.5-preview", "o3-mini", "gpt-4o", "gpt-4o-mini", "whisper-1"],
     "Groq": ["distil-whisper-large-v3-en", "gemma2-9b-it", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-guard-3-8b", "llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "whisper-large-v3", "whisper-large-v3-turbo", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-llama-70b-specdec", "qwen-qwq-32b", "mistral-saba-24b", "qwen-2.5-coder-32b", "qwen-2.5-32b", "deepseek-r1-distill-llama-70b", "llama-3.3-70b-specdec"],
     "Gemini": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro", "text-embedding-004"],
-    "Grok": ["grok-2-1212", "grok-2-vision-1212"]
+    "Grok": ["grok-2-1212", "grok-2-vision-1212"],
+    "DeepSeek": ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"]
 }
 
 class EmailSenderWorker(QObject):
@@ -72,9 +73,13 @@ class EmailSenderWorker(QObject):
         """Đặt cờ để dừng quá trình gửi email"""
         self.should_stop = True
     
+    def remove_think_tags(self, content):
+        """Xóa toàn bộ nội dung nằm trong thẻ <think>...</think>"""
+        return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    
     def generate_unique_content(self, recipient):
         # Tạo prompt riêng cho từng người nhận để đảm bảo nội dung khác nhau
-        prompt = f"{self.ai_prompt}\nRecipient: {recipient}"
+        prompt = f"{self.ai_prompt}"
         try:
             if self.ai_server == "ChatGPT":
                 response = openai.ChatCompletion.create(
@@ -93,7 +98,20 @@ class EmailSenderWorker(QObject):
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}]
                 )
-                return response.choices[0].message.content
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think> cho nội dung trả về từ mô hình DeepSeek
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                return cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
+            elif self.ai_server == "DeepSeek":
+                client = OpenAI(api_key=self.api_key, base_url="https://api.deepseek.com")
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                return cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "Grok":
                 return "Grok chưa có API công khai, hãy kiểm tra sau!"
             else:
@@ -125,19 +143,19 @@ class EmailSenderWorker(QObject):
             try:
                 server.login(self.sender_email, self.password)
             except smtplib.SMTPAuthenticationError:
-                self.error_signal.emit("Xác thực thất bại: Kiểm tra email và mật khẩu")
+                self.error_signal.emit("❌ Xác thực thất bại: Kiểm tra email và mật khẩu")
                 return
             except Exception as e:
-                self.error_signal.emit(f"Đăng nhập thất bại: {e}")
+                self.error_signal.emit(f"❌ Đăng nhập thất bại: {e}")
                 return
 
             # Gửi email đến từng người nhận
             for idx, recipient in enumerate(self.recipients):
                 if self.should_stop:
-                    self.error_signal.emit("Quá trình gửi email đã bị dừng.")
+                    self.error_signal.emit("⛔ Quá trình gửi email đã bị dừng.")
                     return
                 if time.time() - start_time > timeout:
-                    self.error_signal.emit("Quá trình gửi email vượt quá thời gian cho phép.")
+                    self.error_signal.emit("⛔ Quá trình gửi email vượt quá thời gian cho phép.")
                     return
                     
                 # Nếu auto_integration được bật, tạo nội dung mới cho mỗi email
@@ -153,13 +171,14 @@ class EmailSenderWorker(QObject):
                     msg['Subject'] = self.subject
                     if self.reply_to:
                         msg['Reply-To'] = self.reply_to
-                    msg.attach(MIMEText(self.body, 'html'))
+                    # msg.attach(MIMEText(self.body, 'html'))
+                    msg.attach(MIMEText(unique_body, 'html'))
                     server.sendmail(self.sender_email, recipient, msg.as_string())
                     successes += 1
-                    self.log_signal.emit(f"Email được gửi tới {recipient}")
+                    self.log_signal.emit(f"✅ Email được gửi tới {recipient}")
                 except Exception as ex:
                     failures[recipient] = str(ex)
-                    self.log_signal.emit(f"Gửi mail không thành công tới {recipient}: {ex}")
+                    self.log_signal.emit(f"❌ Gửi mail không thành công tới {recipient}: {ex}")
                 finally:
                     self.progress_signal.emit(idx + 1)
             server.quit()
@@ -172,11 +191,11 @@ class EmailSenderWorker(QObject):
             }
             self.summary_signal.emit(summary)
         except smtplib.SMTPAuthenticationError:
-            self.error_signal.emit("Xác thực thất bại. Vui lòng kiểm tra email và mật khẩu.")
+            self.error_signal.emit("❌ Xác thực thất bại. Vui lòng kiểm tra email và mật khẩu.")
         except smtplib.SMTPConnectError:
-            self.error_signal.emit("Không thể kết nối tới server SMTP. Kiểm tra server và port.")
+            self.error_signal.emit("❌ Không thể kết nối tới server SMTP. Kiểm tra server và port.")
         except Exception as e:
-            self.error_signal.emit(f"Đã xảy ra lỗi: {str(e)}")
+            self.error_signal.emit(f"❌ Đã xảy ra lỗi: {str(e)}")
         finally:
             pass
     
@@ -204,7 +223,11 @@ class ContentGeneratorWorker(QObject):
         self.api_key = api_key
         self.prompt = prompt
         self.model = model
-
+    
+    def remove_think_tags(self, content):
+        """Xóa toàn bộ nội dung nằm trong thẻ <think>...</think>"""
+        return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    
     def run(self):
         try:
             if self.ai_server == "ChatGPT":
@@ -225,7 +248,20 @@ class ContentGeneratorWorker(QObject):
                     model=self.model,
                     messages=[{"role": "user", "content": self.prompt}]
                 )
-                generated = response.choices[0].message.content
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                generated = cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
+            elif self.ai_server == "DeepSeek":
+                client = OpenAI(api_key=self.api_key, base_url="https://api.deepseek.com")
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": self.prompt}]
+                )
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                generated = cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "Grok":
                 # Chưa có API chính thức từ xAI, cần cập nhật sau
                 generated = "Grok chưa có API công khai, hãy kiểm tra sau!"
@@ -247,6 +283,26 @@ class BulkEmailSender(QWidget):
         self.is_sending = False
         self.is_gathering = False
         self.extracted_emails = set()
+        # Gọi delayed_save_settings() mỗi khi người dùng nhập dữ liệu
+        self.email_input.textChanged.connect(self.delayed_save_settings)
+        self.password_input.textChanged.connect(self.delayed_save_settings)
+        self.subject_input.textChanged.connect(self.delayed_save_settings)
+        self.reply_input.textChanged.connect(self.delayed_save_settings)
+        self.provider_combo.currentIndexChanged.connect(self.delayed_save_settings)
+        self.custom_smtp_input.textChanged.connect(self.delayed_save_settings)
+        self.custom_port_input.textChanged.connect(self.delayed_save_settings)
+        self.rich_editor.textChanged.connect(self.delayed_save_settings)
+        self.raw_editor.textChanged.connect(self.delayed_save_settings)
+        self.ai_server_combo.currentIndexChanged.connect(self.delayed_save_settings)
+        self.api_key_input.textChanged.connect(self.delayed_save_settings)
+        self.prompt_input.textChanged.connect(self.delayed_save_settings)
+        self.generated_output.textChanged.connect(self.delayed_save_settings)
+        self.auto_integration_checkbox.stateChanged.connect(self.delayed_save_settings)
+        self.security_combo.currentIndexChanged.connect(self.delayed_save_settings)
+        self.check_email_checkbox.stateChanged.connect(self.delayed_save_settings)
+        self.url_input.textChanged.connect(self.delayed_save_settings)
+        self.sitemap_checkbox.stateChanged.connect(self.delayed_save_settings)
+        self.thread_count_input.textChanged.connect(self.delayed_save_settings)
 
     def initUI(self):
         self.tabs = QTabWidget()
@@ -279,7 +335,7 @@ class BulkEmailSender(QWidget):
         
         # Row 3: Reply-To
         row_reply = QHBoxLayout()
-        self.reply_label = QLabel("Reply-To:")
+        self.reply_label = QLabel("Trả lời tới:")
         self.reply_input = QLineEdit()
         row_reply.addWidget(self.reply_label)
         row_reply.addWidget(self.reply_input)
@@ -307,9 +363,9 @@ class BulkEmailSender(QWidget):
         self.provider_combo.addItems(list(SMTP_CONFIG.keys()) + ["Khác"])
         self.provider_combo.currentIndexChanged.connect(self.provider_changed)
         row3.addWidget(self.provider_combo)
-        self.custom_smtp_label = QLabel("Custom SMTP:")
+        self.custom_smtp_label = QLabel("SMTP tuỳ chỉnh:")
         self.custom_smtp_input = QLineEdit()
-        self.custom_port_label = QLabel("Port:")
+        self.custom_port_label = QLabel("Cổng:")
         self.custom_port_input = QLineEdit()
         self.custom_smtp_label.setVisible(False)
         self.custom_smtp_input.setVisible(False)
@@ -323,7 +379,7 @@ class BulkEmailSender(QWidget):
         
         # Thêm ô chọn Connection Security
         row_security = QHBoxLayout()
-        self.security_label = QLabel("Connection Security:")
+        self.security_label = QLabel("Kết nối Bảo mật:")
         row_security.addWidget(self.security_label)
         self.security_combo = QComboBox()
         self.security_combo.addItems(["SSL", "TLS", "None"])
@@ -372,27 +428,27 @@ class BulkEmailSender(QWidget):
         gen_layout = QVBoxLayout()
 
         row_ai = QHBoxLayout()
-        self.ai_server_label = QLabel("AI Server:")
+        self.ai_server_label = QLabel("Máy chủ AI:")
         row_ai.addWidget(self.ai_server_label)
         self.ai_server_combo = QComboBox()
-        self.ai_server_combo.addItems(["Groq", "ChatGPT", "Gemini", "Grok"])
+        self.ai_server_combo.addItems(["Groq", "ChatGPT", "Gemini", "Grok", "DeepSeek"])
         row_ai.addWidget(self.ai_server_combo)
         self.ai_server_combo.currentIndexChanged.connect(self.update_model_combo)
         gen_layout.addLayout(row_ai)
 
         row_api = QHBoxLayout()
-        self.api_key_label = QLabel("API Key:")
+        self.api_key_label = QLabel("Khoá API:")
         row_api.addWidget(self.api_key_label)
         self.api_key_input = QLineEdit()
         row_api.addWidget(self.api_key_input)
         gen_layout.addLayout(row_api)
         
-        self.model_label = QLabel("Model:")  # Nhãn cho combobox model
+        self.model_label = QLabel("Mô hình:")  # Nhãn cho combobox model
         gen_layout.addWidget(self.model_label)
         self.model_combo = QComboBox()  # Combobox để chọn model
         gen_layout.addWidget(self.model_combo)
 
-        self.prompt_label = QLabel("Prompt:")
+        self.prompt_label = QLabel("Nhập yêu cầu cho AI:")
         gen_layout.addWidget(self.prompt_label)
         self.prompt_input = QTextEdit()
         self.prompt_input.setMinimumHeight(100)
@@ -431,8 +487,8 @@ class BulkEmailSender(QWidget):
         about_info = {
             "Tác giả": "TekDT",
             "Phần mềm": "AIBulkMailer",
-            "Phiên bản": "1.0.0",
-            "Ngày phát hành": "08/03/2025",
+            "Phiên bản": "1.0.1",
+            "Ngày phát hành": "10/03/2025",
             "Mô tả": "Phần mềm gửi email hàng loạt với khả năng hỗ trợ đa luồng, tạo nội dung tự động bằng nhiều mô hình AI và thu thập tất cả email trên một trang web."
         }
         for key, value in about_info.items():
@@ -454,7 +510,6 @@ class BulkEmailSender(QWidget):
         self.worker = None
         self.gen_thread = None
         self.gen_worker = None
-
     
     def setup_gather_tab(self):
         """Thiết lập tab Gather Mail."""
@@ -509,7 +564,7 @@ class BulkEmailSender(QWidget):
     def gather_emails(self):
         url = self.url_input.text().strip()
         if not url:
-            self.output_area.setText("Vui lòng nhập link trang web.")
+            self.output_area.setText("⚠️ Vui lòng nhập link trang web.")
             return
 
         try:
@@ -517,7 +572,7 @@ class BulkEmailSender(QWidget):
             if max_workers <= 0:
                 raise ValueError
         except ValueError:
-            self.output_area.setText("Số luồng không hợp lệ. Vui lòng nhập số nguyên dương.")
+            self.output_area.setText("⚠️ Số luồng không hợp lệ. Vui lòng nhập số nguyên dương.")
             return
 
         # Đặt cờ bắt đầu thu thập
@@ -527,7 +582,7 @@ class BulkEmailSender(QWidget):
         if hasattr(self, 'thread') and self.thread and self.thread.isRunning():
             self.stop_gathering()
 
-        self.gather_status_label.setText("Đang thu thập email, vui lòng đợi...")
+        self.gather_status_label.setText("▶️ Đang thu thập email, vui lòng đợi...")
         self.gather_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.export_button.setEnabled(False)
@@ -547,8 +602,8 @@ class BulkEmailSender(QWidget):
     def on_gather_finished(self, emails):
         """Xử lý khi quá trình thu thập email hoàn tất"""
         self.extracted_emails = emails
-        self.output_area.setText("\n".join(emails) if emails else "Không tìm thấy email nào.")
-        self.gather_status_label.setText(f"Hoàn tất! Thu thập {len(emails)} email.")
+        self.output_area.setText("\n".join(emails) if emails else "️⚠️ Không tìm thấy email nào.")
+        self.gather_status_label.setText(f"✅ Hoàn tất! Thu thập {len(emails)} email.")
         self.gather_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.export_button.setEnabled(bool(emails))
@@ -562,10 +617,10 @@ class BulkEmailSender(QWidget):
             self.extracted_emails.update(emails)
         if self.is_gathering:  # Nếu không bị dừng, hiển thị kết quả
             self.display_emails()
-            self.gather_status_label.setText(f"Hoàn thành! Tìm thấy {len(self.extracted_emails)} email.")
+            self.gather_status_label.setText(f"✅ Hoàn thành! Tìm thấy {len(self.extracted_emails)} email.")
         else:
-            self.output_area.setText("Quá trình thu thập đã bị dừng.")
-            self.gather_status_label.setText("Quá trình bị dừng.")
+            self.output_area.setText("⛔ Quá trình thu thập đã bị dừng.")
+            self.gather_status_label.setText("⛔ Quá trình bị dừng.")
         self.reset_gather_buttons()
 
     def display_emails(self):
@@ -573,7 +628,7 @@ class BulkEmailSender(QWidget):
         if self.extracted_emails:
             self.output_area.setText("\n".join(self.extracted_emails))
         else:
-            self.output_area.setText("Không tìm thấy email nào.")
+            self.output_area.setText("⚠️ Không tìm thấy email nào.")
 
     def reset_gather_buttons(self):
         """Đặt lại trạng thái các nút sau khi thu thập hoàn thành hoặc bị dừng."""
@@ -589,13 +644,8 @@ class BulkEmailSender(QWidget):
             return set()
         html, error = self.fetch_html(url)
         if error:
-            print(f"Lỗi tải trang {url}: {error}")
             return set()
         emails = set(self.extract_emails_from_html(html))
-        # if emails:
-            # print(f"Tìm thấy {len(emails)} email từ {url}: {emails}")
-        # else:
-            # print(f"Không tìm thấy email nào trên {url}")
         return emails
 
     def stop_gathering(self):
@@ -607,7 +657,7 @@ class BulkEmailSender(QWidget):
             self.thread.quit()
             self.thread.wait()
 
-        self.gather_status_label.setText("Quá trình thu thập đã bị dừng.")
+        self.gather_status_label.setText("⛔ Quá trình thu thập đã bị dừng.")
         # Cập nhật UI đúng cách
         self.gather_button.setEnabled(True)
         self.stop_button.setEnabled(False)
@@ -626,12 +676,12 @@ class BulkEmailSender(QWidget):
                 sitemap_url = base_url + path
                 response = requests.head(sitemap_url, timeout=5)  # Kiểm tra xem sitemap có tồn tại không
                 if response.status_code == 200:
-                    self.status_label.setText("Đã tìm thấy sitemap")
+                    self.status_label.setText("✅ Đã tìm thấy sitemap")
                     return sitemap_url
             
             return None  # Không tìm thấy sitemap
         except Exception as e:
-            self.output_area.setText(f"Lỗi khi lấy sitemap: {e}")
+            self.output_area.setText(f"❌ Lỗi khi lấy sitemap: {e}")
             return None
 
     def parse_sitemap(self, sitemap_url):
@@ -640,10 +690,10 @@ class BulkEmailSender(QWidget):
         try:
             response = requests.get(sitemap_url, timeout=10)
             if response.status_code != 200:
-                self.output_area.setText(f"Không thể tải sitemap: {response.status_code}")
+                self.output_area.setText(f"❌ Không thể tải sitemap: {response.status_code}")
                 return []
 
-            self.status_label.setText("Đang trích xuất tất cả liên kết bên trong sitemap")
+            self.status_label.setText("♾️ Đang trích xuất tất cả liên kết bên trong sitemap")
             content = response.content.decode('utf-8', errors='ignore')
             root = ET.fromstring(content)
             namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
@@ -657,10 +707,10 @@ class BulkEmailSender(QWidget):
 
             return urls
         except ET.ParseError as e:
-            self.output_area.setText(f"Lỗi khi phân tích sitemap: {e}")
+            self.output_area.setText(f"❌ Lỗi khi phân tích sitemap: {e}")
             return []
         except Exception as e:
-            self.output_area.setText(f"Lỗi không xác định khi phân tích sitemap: {e}")
+            self.output_area.setText(f"❌ Lỗi không xác định khi phân tích sitemap: {e}")
             return []
     
     def fetch_html(self, url):
@@ -695,7 +745,7 @@ class BulkEmailSender(QWidget):
     def export_emails_to_csv(self):
         """Xuất danh sách email ra file CSV."""
         if not self.extracted_emails:
-            self.output_area.setText("Không có email nào để xuất.")
+            self.output_area.setText("⚠️ Không có email nào để xuất.")
             return
 
         file_path, _ = QFileDialog.getSaveFileName(self, "Lưu danh sách email", "", "CSV Files (*.csv)")
@@ -705,9 +755,9 @@ class BulkEmailSender(QWidget):
                     writer = csv.writer(csvfile)
                     for email in self.extracted_emails:
                         writer.writerow([email])  # Mỗi email một dòng
-                self.output_area.setText(f"Xuất thành công {len(self.extracted_emails)} email vào {file_path}.")
+                self.output_area.setText(f"✅ Xuất thành công {len(self.extracted_emails)} email vào {file_path}.")
             except Exception as e:
-                self.output_area.setText(f"Lỗi khi xuất file: {e}")
+                self.output_area.setText(f"❌ Lỗi khi xuất file: {e}")
 
     # Hàm cập nhật danh sách model
     def update_model_combo(self):
@@ -730,12 +780,15 @@ class BulkEmailSender(QWidget):
             self.provider_combo.setCurrentText("Khác")
 
     def tab_changed(self, index):
-        if index == 1:
-            html_content = self.rich_editor.toHtml()
-            self.raw_editor.setPlainText(html_content)
-        elif index == 0:
-            html_content = self.raw_editor.toPlainText()
-            self.rich_editor.setHtml(html_content)
+        try:
+            if index == 1:  # Chuyển sang RAW HTML
+                html_content = self.rich_editor.toHtml()
+                self.raw_editor.setPlainText(html_content)
+            elif index == 0:  # Chuyển sang Soạn thảo trực quan
+                html_content = self.raw_editor.toPlainText()
+                self.rich_editor.setHtml(html_content)
+        except Exception as e:
+            self.status_label.setText(f"❌ Lỗi khi chuyển đổi tab: {e}")
 
     def provider_changed(self, index):
         provider = self.provider_combo.currentText()
@@ -757,21 +810,21 @@ class BulkEmailSender(QWidget):
                 with open(file_path, newline='', encoding='utf-8') as csvfile:
                     reader = csv.reader(csvfile)
                     self.recipients = [row[0] for row in reader if row]
-                    self.status_label.setText(f"Đã tải {len(self.recipients)} người nhận.")
-                    self.log_output.append(f"Đã tải {len(self.recipients)} người nhận từ tập tin.")
+                    self.status_label.setText(f"✅ Đã tải {len(self.recipients)} người nhận.")
+                    self.log_output.append(f"✅ Đã tải {len(self.recipients)} người nhận từ tập tin.")
             except Exception as e:
-                self.status_label.setText(f"Lỗi khi tải tập tin: {e}")
-                self.log_output.append(f"Lỗi khi tải tập tin: {e}")
+                self.status_label.setText(f"❌ Lỗi khi tải tập tin: {e}")
+                self.log_output.append(f"❌ Lỗi khi tải tập tin: {e}")
     
     def verify_email_address(self, email, from_address="test@example.com", timeout=10, check_mailbox=True):
         # 1. Kiểm tra cú pháp email
         pattern = r"(?<!\S)[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?!\S)"
         if not re.fullmatch(pattern, email):
-            return False, "Định dạng email không hợp lệ."
+            return False, "❌ Định dạng email không hợp lệ."
         
         # Nếu không tick kiểm tra đầy đủ, chỉ dựa vào cú pháp
         if not check_mailbox:
-            return True, "Email hợp lệ (không kiểm tra tên miền/hộp thư)."
+            return True, "❌ Email hợp lệ (không kiểm tra tên miền/hộp thư)."
         
         # 2. Kiểm tra sự tồn tại của tên miền (MX hoặc A record)
         try:
@@ -783,7 +836,7 @@ class BulkEmailSender(QWidget):
                 # Nếu không có MX, thử A record
                 answers = dns.resolver.resolve(domain, 'A', lifetime=timeout)
         except Exception as e:
-            return False, f"Tên miền không hợp lệ hoặc không tồn tại: {e}"
+            return False, f"❌ Tên miền không hợp lệ hoặc không tồn tại: {e}"
         
         # 3. Kiểm tra hộp thư qua SMTP
         try:
@@ -796,40 +849,33 @@ class BulkEmailSender(QWidget):
             code, _ = server.rcpt(email)
             server.quit()
             if code != 250:
-                return False, "Hộp thư không tồn tại hoặc bị từ chối bởi server."
+                return False, "❌ Hộp thư không tồn tại hoặc bị từ chối bởi server."
         except Exception as e:
-            return False, f"Kiểm tra mailbox không thành công: {e}"
+            return False, f"❌ Kiểm tra mailbox không thành công: {e}"
         
-        return True, "Email hợp lệ."
+        return True, "✅ Email hợp lệ."
 
     def send_emails(self):
         # Kiểm tra xem có đang gửi email không
         if self.is_sending:
-            self.status_label.setText("Đang thực hiện gửi email. Vui lòng đợi.")
+            self.status_label.setText("♾️ Đang thực hiện gửi email. Vui lòng đợi.")
             self.worker.stop()  # Gọi phương thức stop của worker
             self.thread.quit()  # Thoát luồng
             self.thread.wait()  # Đợi luồng dừng hoàn toàn
             self.is_sending = False
-            self.status_label.setText("Đã dừng luồng gửi email trước đó.")
+            self.status_label.setText("❌ Đã dừng luồng gửi email trước đó.")
             pass
             return
         
         # Vô hiệu hóa nút "Send Emails"
         self.send_button.setEnabled(False)
-        self.status_label.setText("Đang gửi email...")
+        self.status_label.setText("♾️ Đang gửi email...")
         self.is_sending = True  # Đặt trạng thái đang gửi
         
         sender_email = self.email_input.text().strip()
         password = self.password_input.text().strip()
         subject = self.subject_input.text().strip()
         reply_to = self.reply_input.text().strip()
-
-        # if self.auto_integration_checkbox.isChecked():
-            # generated_content = self.generated_output.toPlainText().strip()
-            # if generated_content:
-                # self.rich_editor.setHtml(generated_content)
-                # if self.tab_widget.currentIndex() == 1:
-                    # self.raw_editor.setPlainText(generated_content)
 
         if self.tab_widget.currentIndex() == 1:
             self.rich_editor.setHtml(self.raw_editor.toPlainText())
@@ -842,12 +888,12 @@ class BulkEmailSender(QWidget):
             try:
                 port = int(self.custom_port_input.text().strip())
             except ValueError:
-                self.status_label.setText("Sai cổng.")
-                self.log_output.append("Cổng được nhập không đúng.")
+                self.status_label.setText("❌ Sai cổng.")
+                self.log_output.append("❌ Cổng được nhập không đúng.")
                 return
             if not smtp_server:
-                self.status_label.setText("Vui lòng nhập máy chủ SMTP hợp lệ.")
-                self.log_output.append("Máy chủ SMTP bị thiếu.")
+                self.status_label.setText("⚠️ Vui lòng nhập máy chủ SMTP hợp lệ.")
+                self.log_output.append("❌ Máy chủ SMTP bị thiếu.")
                 return
         else:
             config = SMTP_CONFIG.get(provider)
@@ -861,8 +907,8 @@ class BulkEmailSender(QWidget):
                 port = config.get("port", config.get("port_tls", config.get("port_ssl")))
 
         if not self.recipients:
-            self.status_label.setText("Danh sách người nhận trống.")
-            self.log_output.append("Danh sách người nhận trống.")
+            self.status_label.setText("⚠️ Danh sách người nhận trống.")
+            self.log_output.append("⚠ ️Danh sách người nhận trống.")
             return
 
         # --- Kiểm tra email trước khi gửi ---
@@ -879,12 +925,12 @@ class BulkEmailSender(QWidget):
                 invalid_emails.append(f"{recipient}: {message}")
         
         if invalid_emails:
-            self.log_output.append("Một số email không hợp lệ:")
+            self.log_output.append("⚠️ Một số email không hợp lệ:")
             for err in invalid_emails:
                 self.log_output.append(err)
         
         if not valid_recipients:
-            self.status_label.setText("Không có email hợp lệ để gửi.")
+            self.status_label.setText("⚠️ Không có email hợp lệ để gửi.")
             self.send_button.setEnabled(True)
             self.is_sending = False
             return
@@ -892,14 +938,6 @@ class BulkEmailSender(QWidget):
         # Cập nhật danh sách người nhận chỉ chứa email hợp lệ
         self.recipients = valid_recipients
         # --- Kết thúc kiểm tra ---
-        
-        # # Lấy tùy chọn Connection Security từ giao diện
-        # connection_security = self.security_combo.currentText()
-        # if connection_security == "TLS" and port == 465:
-            # # Ví dụ: nếu chọn TLS với Gmail, port nên là 587
-            # port = 587
-        # elif connection_security == "SSL" and port == 587:
-            # port = 465
             
         # Lấy các thông số AI từ giao diện để tạo nội dung độc đáo cho mỗi email
         auto_integration = self.auto_integration_checkbox.isChecked()
@@ -911,7 +949,7 @@ class BulkEmailSender(QWidget):
         self.progress_bar.setRange(0, len(self.recipients))
         self.progress_bar.setValue(0)
         self.log_output.clear()
-        self.status_label.setText("Đang gửi mail...")
+        self.status_label.setText("♾️ Đang gửi mail...")
 
         self.thread = QThread()
         self.worker = EmailSenderWorker(smtp_server, port, self.email_input.text().strip(), self.password_input.text().strip(), self.subject_input.text().strip(), self.rich_editor.toHtml(), self.recipients, connection_security, self.reply_input.text().strip())
@@ -928,8 +966,8 @@ class BulkEmailSender(QWidget):
         self.thread.start()
 
     def on_error(self, error_msg):
-        self.status_label.setText(f"Lỗi: {error_msg}")
-        self.log_output.append(f"Lỗi: {error_msg}")
+        self.status_label.setText(f"❌ Lỗi: {error_msg}")
+        self.log_output.append(f"❌ Lỗi: {error_msg}")
         self.send_button.setEnabled(True)
         # Nếu thread vẫn đang chạy, hãy dừng nó
         if self.thread is not None and self.thread.isRunning():
@@ -944,12 +982,12 @@ class BulkEmailSender(QWidget):
         success = summary["success"]
         failed = summary["failed"]
         failed_recipients = summary["failed_recipients"]
-        status_msg = f"Đã hoàn thành: {success}/{total} email được gửi thành công, {failed} thất bại"
+        status_msg = f"✅ Đã hoàn thành: {success}/{total} email được gửi thành công, {failed} thất bại"
         self.status_label.setText(status_msg)
         self.log_output.append("\n=== Tổng kết Mail Gửi ===")
         self.log_output.append(status_msg)
         if failed_recipients:
-            self.log_output.append("Danh sách gửi không thành công:")
+            self.log_output.append("❌ Danh sách gửi không thành công:")
             for recipient, error in failed_recipients.items():
                 self.log_output.append(f"- {recipient}: {error}")
         if self.thread is not None:
@@ -974,13 +1012,13 @@ class BulkEmailSender(QWidget):
         prompt = self.prompt_input.toPlainText().strip()
         model = self.model_combo.currentText()
         if not prompt:
-            self.gen_status_label.setText("Vui lòng nhập prompt.")
+            self.gen_status_label.setText("⚠️ Vui lòng nhập prompt.")
             return
         if not model:
-            self.gen_status_label.setText("Vui lòng chọn model.")
+            self.gen_status_label.setText("⚠️ Vui lòng chọn model.")
             return
 
-        self.gen_status_label.setText("Đang tạo nội dung...")
+        self.gen_status_label.setText("♾️ Đang tạo nội dung...")
         self.generate_button.setEnabled(False)
         self.apply_button.setEnabled(False)
         # Tạo luồng mới
@@ -1009,12 +1047,12 @@ class BulkEmailSender(QWidget):
     
     def on_gen_result(self, result):
         self.generated_output.setPlainText(result)
-        self.gen_status_label.setText("Tạo nội dung thành công!")
+        self.gen_status_label.setText("✅ Tạo nội dung thành công!")
         self.generate_button.setEnabled(True)
         self.apply_button.setEnabled(True)
 
     def on_gen_error(self, error_msg):
-        self.gen_status_label.setText(f"Lỗi: {error_msg}")
+        self.gen_status_label.setText(f"❌ Lỗi: {error_msg}")
         self.generate_button.setEnabled(True)
 
     def apply_generated_content(self):
@@ -1023,7 +1061,7 @@ class BulkEmailSender(QWidget):
             self.rich_editor.setHtml(generated)
             if self.tab_widget.currentIndex() == 1:
                 self.raw_editor.setPlainText(generated)
-            self.status_label.setText("Nội dung được tạo đã áp dụng cho Nội dung email.")
+            self.status_label.setText("✅ Nội dung được tạo đã áp dụng cho Nội dung email.")
 
     def load_settings(self):
         if os.path.exists(SETTINGS_FILE):
@@ -1047,7 +1085,7 @@ class BulkEmailSender(QWidget):
                 self.auto_integration_checkbox.setChecked(settings.get("auto_integration", False))
                 self.recipients = settings.get("recipients", [])
                 if self.recipients:
-                    self.status_label.setText(f"Đã tải {len(self.recipients)} người nhận từ tập tin lưu trữ.")
+                    self.status_label.setText(f"✅ Đã tải {len(self.recipients)} người nhận từ tập tin lưu trữ.")
                 self.security_combo.setCurrentText(settings.get("connection_security", "SSL"))
                 self.check_email_checkbox.setChecked(settings.get("check_email", False))
                 self.url_input.setText(settings.get("gather_url", ""))
@@ -1062,7 +1100,7 @@ class BulkEmailSender(QWidget):
                     self.model_combo.setCurrentText(model)  # Đặt model đã lưu
             except Exception as e:
                 if hasattr(self, 'status_label'):
-                    self.status_label.setText(f"Lỗi khi tải các thiết lập: {e}")
+                    self.status_label.setText(f"❌ Lỗi khi tải các thiết lập: {e}")
 
     def save_settings(self):
         if self.tab_widget.currentIndex() == 1:
@@ -1095,9 +1133,17 @@ class BulkEmailSender(QWidget):
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(settings, f, ensure_ascii=False, indent=4)
         except Exception as e:
-            self.status_label.setText(f"Lỗi khi lưu các thiết lập: {e}")
-            print(f"Lỗi khi lưu các thiết lập: {e}")
+            self.status_label.setText(f"❌ Lỗi khi lưu các thiết lập: {e}")
+            print(f"❌ Lỗi khi lưu các thiết lập: {e}")
 
+    def delayed_save_settings(self):
+        if hasattr(self, "_save_timer"):
+            self._save_timer.stop()  # Hủy timer trước đó nếu có
+        self._save_timer = QTimer()
+        self._save_timer.setSingleShot(True)  # Chỉ chạy một lần
+        self._save_timer.timeout.connect(self.save_settings)
+        self._save_timer.start(500)  # Đợi 500ms trước khi lưu
+    
     def closeEvent(self, event):
         self.save_settings()
         if self.thread and self.thread.isRunning():
@@ -1127,7 +1173,7 @@ class GatherEmailsWorker(QObject):
 
     def run(self):
         """Bắt đầu quá trình thu thập email"""
-        self.status_update.emit("Bắt đầu thu thập email...")
+        self.status_update.emit("♾️ Bắt đầu thu thập email...")
 
         try:
             executor = ThreadPoolExecutor(max_workers=self.max_workers)
@@ -1139,7 +1185,7 @@ class GatherEmailsWorker(QObject):
                     urls = self.main_window.parse_sitemap(sitemap_url)
                     futures = [executor.submit(self.main_window.process_url, u) for u in urls]
                 else:
-                    self.status_update.emit("Không tìm thấy sitemap.")
+                    self.status_update.emit("⚠️ Không tìm thấy sitemap.")
                     self.finished.emit(set())
                     return
             else:
@@ -1152,9 +1198,9 @@ class GatherEmailsWorker(QObject):
                 emails = future.result()
                 self.emails.update(emails)
 
-            self.status_update.emit(f"Thu thập hoàn tất! Tìm thấy {len(self.emails)} email.")
+            self.status_update.emit(f"✅ Thu thập hoàn tất! Tìm thấy {len(self.emails)} email.")
         except Exception as e:
-            self.status_update.emit(f"Lỗi trong quá trình thu thập: {e}")
+            self.status_update.emit(f"❌ Lỗi trong quá trình thu thập: {e}")
         
         self.finished.emit(self.emails)
 
