@@ -5,7 +5,11 @@ import time
 import json
 import os
 import requests
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+import msal
 import re
+import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from openai import OpenAI
@@ -32,8 +36,11 @@ SMTP_CONFIG = {
     "Mailtrap": {"server": "live.smtp.mailtrap.io", "port_tls": 587},
     "AOL": {"server": "smtp.aol.com", "port_ssl": 465, "port_tls": 587},
     "Mailersend": {"server": "smtp.mailersend.net", "port_tls": 587},
-    "Hotmail/Outlook": {"server": "smtp.office365.com", "port_ssl": 465, "port_tls": 587}
+    "Hotmail/Outlook": {"server": "smtp-mail.outlook.com", "port_ssl": 465, "port_tls": 587},
+    "Yandex": {"server": "smtp.yandex.com", "port_ssl": 465, "port_tls": 587}
 }
+
+# Cấu hình Mô hình AI
 AI_MODELS = {
     "ChatGPT": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.5-preview", "o3-mini", "gpt-4o", "gpt-4o-mini", "whisper-1"],
     "Groq": ["distil-whisper-large-v3-en", "gemma2-9b-it", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-guard-3-8b", "llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "whisper-large-v3", "whisper-large-v3-turbo", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-llama-70b-specdec", "qwen-qwq-32b", "mistral-saba-24b", "qwen-2.5-coder-32b", "qwen-2.5-32b", "deepseek-r1-distill-llama-70b", "llama-3.3-70b-specdec"],
@@ -42,6 +49,41 @@ AI_MODELS = {
     "DeepSeek": ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"]
 }
 
+# Hàm lấy token cho Gmail
+def get_gmail_token(client_id, client_secret, refresh_token):
+    creds = Credentials(
+        None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret
+    )
+    if creds.expired:
+        creds.refresh(Request())
+    return creds.token
+
+# Hàm lấy token cho Outlook
+def get_outlook_token(client_id, client_secret, refresh_token):
+    app = msal.ConfidentialClientApplication(
+        client_id=client_id,
+        client_credential=client_secret,
+        authority="https://login.microsoftonline.com/common"
+    )
+    result = app.acquire_token_by_refresh_token(
+        refresh_token=refresh_token,
+        scopes=["https://outlook.office.com/SMTP.Send"]
+    )
+    return result.get("access_token")
+
+class SMTP_OAUTH(smtplib.SMTP):
+    def login(self, user, token):
+        """Xác thực với máy chủ SMTP bằng OAuth2 token."""
+        auth_string = f"user={user}\x01auth=Bearer {token}\x01\x01"
+        auth_msg = base64.b64encode(auth_string.encode()).decode()
+        code, message = self.docmd("AUTH", "XOAUTH2 " + auth_msg)
+        if code != 235:
+            raise smtplib.SMTPAuthenticationError(code, message)
+
 class EmailSenderWorker(QObject):
     error_signal = pyqtSignal(str)
     log_signal = pyqtSignal(str)
@@ -49,7 +91,7 @@ class EmailSenderWorker(QObject):
     summary_signal = pyqtSignal(dict)
 
     def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None,
-                 auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None):
+                 use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None):
         super().__init__()
         self.smtp_server = smtp_server
         self.port = port
@@ -60,6 +102,9 @@ class EmailSenderWorker(QObject):
         self.recipients = recipients
         self.reply_to = reply_to
         self.connection_security = connection_security
+        self.use_oauth = use_oauth  # Thêm cờ để bật/tắt OAuth2
+        self.oauth_config = oauth_config  # Cấu hình OAuth2 (client_id, client_secret, token_url, ...)
+        self.refresh_token = refresh_token  # Refresh token cho OAuth2
         self.is_sending = False
         self.should_stop = False
         # Các tham số AI:
@@ -126,28 +171,56 @@ class EmailSenderWorker(QObject):
         try:
             start_time = time.time()
             timeout = 300  # Giới hạn thời gian 5 phút
-            context = ssl.create_default_context()
-
-            # Chọn kiểu kết nối dựa trên connection_security
-            if self.connection_security == "SSL":
-                server = smtplib.SMTP_SSL(self.smtp_server, self.port, context=context)
-            elif self.connection_security == "TLS":
-                server = smtplib.SMTP(self.smtp_server, self.port)
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-            else:
-                server = smtplib.SMTP(self.smtp_server, self.port)
+            context = ssl.create_default_context()                
                 
-            # Đăng nhập
-            try:
-                server.login(self.sender_email, self.password)
-            except smtplib.SMTPAuthenticationError:
-                self.error_signal.emit("❌ Xác thực thất bại: Kiểm tra email và mật khẩu")
-                return
-            except Exception as e:
-                self.error_signal.emit(f"❌ Đăng nhập thất bại: {e}")
-                return
+            # Chọn kiểu kết nối và xác thực dựa trên use_oauth
+            if self.use_oauth:
+                # Lấy token OAuth2 dựa trên nhà cung cấp
+                provider = self.oauth_config.get("provider", "").lower()
+                if provider == "gmail":
+                    token = get_gmail_token(self.oauth_config["client_id"], self.oauth_config["client_secret"], self.refresh_token)
+                    server = SMTP_OAUTH(self.smtp_server, self.port)
+                elif provider == "outlook":
+                    token = get_outlook_token(self.oauth_config["client_id"], self.oauth_config["client_secret"], self.refresh_token)
+                    server = SMTP_OAUTH(self.smtp_server, self.port)
+                else:
+                    raise ValueError("Nhà cung cấp OAuth2 không được hỗ trợ.")
+                
+                # Kết nối SSL hoặc TLS nếu cần
+                if self.connection_security == "SSL":
+                    server = SMTP_OAUTH(self.smtp_server, self.port, context=context)
+                elif self.connection_security == "TLS":
+                    server = SMTP_OAUTH(self.smtp_server, self.port)
+                    server.ehlo()
+                    server.starttls(context=context)
+                    server.ehlo()
+                
+                # Đăng nhập bằng OAuth2
+                try:
+                    server.login(self.sender_email, token)
+                except smtplib.SMTPAuthenticationError:
+                    self.error_signal.emit("❌ Xác thực OAuth2 thất bại: Kiểm tra client_id, client_secret, và refresh_token")
+                    return
+            else:
+                # Xác thực truyền thống
+                if self.connection_security == "SSL":
+                    server = smtplib.SMTP_SSL(self.smtp_server, self.port, context=context, timeout=30)
+                elif self.connection_security == "TLS":
+                    server = smtplib.SMTP(self.smtp_server, self.port, timeout=30)
+                    server.ehlo()
+                    server.starttls(context=context)
+                    server.ehlo()
+                else:
+                    server = smtplib.SMTP(self.smtp_server, self.port, timeout=30)
+                
+                # Đăng nhập bằng email và mật khẩu
+                try:
+                    server.login(self.sender_email, self.password)
+                except smtplib.SMTPAuthenticationError:
+                    self.error_signal.emit("❌ Xác thực thất bại: Kiểm tra email và mật khẩu")
+                    return
+            
+            
 
             # Gửi email đến từng người nhận
             for idx, recipient in enumerate(self.recipients):
@@ -171,7 +244,6 @@ class EmailSenderWorker(QObject):
                     msg['Subject'] = self.subject
                     if self.reply_to:
                         msg['Reply-To'] = self.reply_to
-                    # msg.attach(MIMEText(self.body, 'html'))
                     msg.attach(MIMEText(unique_body, 'html'))
                     server.sendmail(self.sender_email, recipient, msg.as_string())
                     successes += 1
@@ -387,6 +459,31 @@ class BulkEmailSender(QWidget):
         self.security_combo.setCurrentText("SSL")
         row_security.addWidget(self.security_combo)
         main_layout.addLayout(row_security)
+        
+        # Thêm checkbox và các trường OAuth2
+        row_oauth = QHBoxLayout()
+        self.oauth_checkbox = QCheckBox("Sử dụng OAuth2")
+        self.oauth_checkbox.stateChanged.connect(self.toggle_oauth_fields)
+        row_oauth.addWidget(self.oauth_checkbox)
+        self.client_id_label = QLabel("Client ID:")
+        self.client_id_input = QLineEdit()
+        self.client_id_label.setVisible(False)
+        self.client_id_input.setVisible(False)
+        row_oauth.addWidget(self.client_id_label)
+        row_oauth.addWidget(self.client_id_input)
+        self.client_secret_label = QLabel("Client Secret:")
+        self.client_secret_input = QLineEdit()
+        self.client_secret_label.setVisible(False)
+        self.client_secret_input.setVisible(False)
+        row_oauth.addWidget(self.client_secret_label)
+        row_oauth.addWidget(self.client_secret_input)
+        self.refresh_token_label = QLabel("Refresh Token:")
+        self.refresh_token_input = QLineEdit()
+        self.refresh_token_label.setVisible(False)
+        self.refresh_token_input.setVisible(False)
+        row_oauth.addWidget(self.refresh_token_label)
+        row_oauth.addWidget(self.refresh_token_input)
+        main_layout.addLayout(row_oauth)
 
         # Row 6: Nút Load CSV & Send Emails
         row4 = QHBoxLayout()
@@ -396,6 +493,10 @@ class BulkEmailSender(QWidget):
         self.send_button = QPushButton("Gửi mail")
         self.send_button.clicked.connect(self.send_emails)
         row4.addWidget(self.send_button)
+        self.stop_sending_button = QPushButton("Dừng")
+        self.stop_sending_button.clicked.connect(self.stop_sending)
+        self.stop_sending_button.setEnabled(False)  # Ban đầu vô hiệu hóa
+        row4.addWidget(self.stop_sending_button)
         main_layout.addLayout(row4)
         
         # Thêm ô tick kiểm tra email trước khi gửi (nếu bỏ chọn sẽ bỏ qua kiểm tra mailbox qua SMTP)
@@ -511,6 +612,25 @@ class BulkEmailSender(QWidget):
         self.gen_thread = None
         self.gen_worker = None
     
+    def toggle_oauth_fields(self, state):
+        visible = state == Qt.CheckState.Checked.value
+        self.client_id_label.setVisible(visible)
+        self.client_id_input.setVisible(visible)
+        self.client_secret_label.setVisible(visible)
+        self.client_secret_input.setVisible(visible)
+        self.refresh_token_label.setVisible(visible)
+        self.refresh_token_input.setVisible(visible)
+    
+    def stop_sending(self):
+        if self.is_sending and self.worker:
+            self.worker.stop()  # Gọi phương thức stop của worker
+            self.thread.quit()  # Thoát luồng
+            self.thread.wait()  # Đợi luồng dừng hoàn toàn
+            self.is_sending = False
+            self.status_label.setText("⛔ Quá trình gửi email đã bị dừng.")
+            self.send_button.setEnabled(True)
+            self.stop_sending_button.setEnabled(False)
+    
     def setup_gather_tab(self):
         """Thiết lập tab Gather Mail."""
         self.gather_tab = QWidget()
@@ -541,10 +661,10 @@ class BulkEmailSender(QWidget):
         self.gather_button = QPushButton("Thu thập")
         self.gather_button.clicked.connect(self.gather_emails)
         button_layout.addWidget(self.gather_button)
-        self.stop_button = QPushButton("Dừng")
-        self.stop_button.clicked.connect(self.stop_gathering)
-        self.stop_button.setEnabled(False)  # Ban đầu vô hiệu hóa
-        button_layout.addWidget(self.stop_button)
+        self.stop_gathering_button = QPushButton("Dừng")
+        self.stop_gathering_button.clicked.connect(self.stop_gathering)
+        self.stop_gathering_button.setEnabled(False)  # Ban đầu vô hiệu hóa
+        button_layout.addWidget(self.stop_gathering_button)
         layout.addLayout(button_layout)
 
         # Nút Xuất CSV
@@ -584,7 +704,7 @@ class BulkEmailSender(QWidget):
 
         self.gather_status_label.setText("▶️ Đang thu thập email, vui lòng đợi...")
         self.gather_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
+        self.stop_gathering_button.setEnabled(True)
         self.export_button.setEnabled(False)
 
         self.thread = QThread()
@@ -605,7 +725,7 @@ class BulkEmailSender(QWidget):
         self.output_area.setText("\n".join(emails) if emails else "️⚠️ Không tìm thấy email nào.")
         self.gather_status_label.setText(f"✅ Hoàn tất! Thu thập {len(emails)} email.")
         self.gather_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self.stop_gathering_button.setEnabled(False)
         self.export_button.setEnabled(bool(emails))
         
     def monitor_futures(self):
@@ -633,7 +753,7 @@ class BulkEmailSender(QWidget):
     def reset_gather_buttons(self):
         """Đặt lại trạng thái các nút sau khi thu thập hoàn thành hoặc bị dừng."""
         self.gather_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self.stop_gathering_button.setEnabled(False)
         self.is_gathering = False
         if self.extracted_emails:
             self.export_button.setEnabled(True)  # Cho phép xuất file
@@ -660,7 +780,7 @@ class BulkEmailSender(QWidget):
         self.gather_status_label.setText("⛔ Quá trình thu thập đã bị dừng.")
         # Cập nhật UI đúng cách
         self.gather_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self.stop_gathering_button.setEnabled(False)
 
     
     def get_sitemap_url(self, input_url):
@@ -857,18 +977,21 @@ class BulkEmailSender(QWidget):
 
     def send_emails(self):
         # Kiểm tra xem có đang gửi email không
-        if self.is_sending:
+        if self.is_sending and self.thread and self.thread.isRunning():
             self.status_label.setText("♾️ Đang thực hiện gửi email. Vui lòng đợi.")
             self.worker.stop()  # Gọi phương thức stop của worker
             self.thread.quit()  # Thoát luồng
             self.thread.wait()  # Đợi luồng dừng hoàn toàn
             self.is_sending = False
+            self.stop_sending()
             self.status_label.setText("❌ Đã dừng luồng gửi email trước đó.")
             pass
             return
         
         # Vô hiệu hóa nút "Send Emails"
         self.send_button.setEnabled(False)
+        self.stop_sending_button.setEnabled(True)
+        QApplication.processEvents()
         self.status_label.setText("♾️ Đang gửi email...")
         self.is_sending = True  # Đặt trạng thái đang gửi
         
@@ -910,7 +1033,25 @@ class BulkEmailSender(QWidget):
             self.status_label.setText("⚠️ Danh sách người nhận trống.")
             self.log_output.append("⚠ ️Danh sách người nhận trống.")
             return
-
+        
+        # Xử lý OAuth2
+        use_oauth = self.oauth_checkbox.isChecked()
+        oauth_config = None
+        refresh_token = None
+        if use_oauth:
+            provider_lower = provider.lower()
+            if provider_lower in ["gmail", "hotmail/outlook"]:
+                oauth_config = OAUTH_CONFIG.get(provider, {})
+                oauth_config["provider"] = provider_lower
+                oauth_config["client_id"] = self.client_id_input.text().strip()
+                oauth_config["client_secret"] = self.client_secret_input.text().strip()
+                refresh_token = self.refresh_token_input.text().strip()
+                if not all([oauth_config["client_id"], oauth_config["client_secret"], refresh_token]):
+                    self.status_label.setText("⚠️ Vui lòng nhập đầy đủ Client ID, Client Secret và Refresh Token.")
+                    self.send_button.setEnabled(True)
+                    self.is_sending = False
+                    return
+        
         # --- Kiểm tra email trước khi gửi ---
         invalid_emails = []
         valid_recipients = []
@@ -952,7 +1093,8 @@ class BulkEmailSender(QWidget):
         self.status_label.setText("♾️ Đang gửi mail...")
 
         self.thread = QThread()
-        self.worker = EmailSenderWorker(smtp_server, port, self.email_input.text().strip(), self.password_input.text().strip(), self.subject_input.text().strip(), self.rich_editor.toHtml(), self.recipients, connection_security, self.reply_input.text().strip())
+        # self.worker = EmailSenderWorker(smtp_server, port, self.email_input.text().strip(), self.password_input.text().strip(), self.subject_input.text().strip(), self.rich_editor.toHtml(), self.recipients, connection_security, self.reply_input.text().strip())
+        self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model)
         self.worker.moveToThread(self.thread)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
         self.worker.log_signal.connect(lambda msg: self.log_output.append(msg))
@@ -962,8 +1104,11 @@ class BulkEmailSender(QWidget):
         self.worker.summary_signal.connect(self.thread.quit)
         self.worker.summary_signal.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.finished.connect(lambda: self.stop_sending_button.setEnabled(False))
+        self.thread.finished.connect(lambda: self.send_button.setEnabled(True))
         self.thread.finished.connect(lambda: setattr(self, 'is_sending', False))  # Reset flag khi luồng hoàn thành
         self.thread.start()
+        QApplication.processEvents()
 
     def on_error(self, error_msg):
         self.status_label.setText(f"❌ Lỗi: {error_msg}")
@@ -1098,6 +1243,11 @@ class BulkEmailSender(QWidget):
                 self.update_model_combo()  # Cập nhật danh sách model
                 if model in AI_MODELS.get(ai_server, []):
                     self.model_combo.setCurrentText(model)  # Đặt model đã lưu
+                self.oauth_checkbox.setChecked(settings.get("use_oauth", False))
+                self.client_id_input.setText(settings.get("client_id", ""))
+                self.client_secret_input.setText(settings.get("client_secret", ""))
+                self.refresh_token_input.setText(settings.get("refresh_token", ""))
+                self.toggle_oauth_fields(Qt.CheckState.Checked.value if settings.get("use_oauth", False) else Qt.CheckState.Unchecked.value)
             except Exception as e:
                 if hasattr(self, 'status_label'):
                     self.status_label.setText(f"❌ Lỗi khi tải các thiết lập: {e}")
@@ -1127,14 +1277,17 @@ class BulkEmailSender(QWidget):
             "check_email": self.check_email_checkbox.isChecked(),
             "gather_url": self.url_input.text(),
             "sitemap": self.sitemap_checkbox.isChecked(),
-            "thread_count": self.thread_count_input.text()
+            "thread_count": self.thread_count_input.text(),
+            "use_oauth": self.oauth_checkbox.isChecked(),
+            "client_id": self.client_id_input.text(),
+            "client_secret": self.client_secret_input.text(),
+            "refresh_token": self.refresh_token_input.text(),
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(settings, f, ensure_ascii=False, indent=4)
         except Exception as e:
             self.status_label.setText(f"❌ Lỗi khi lưu các thiết lập: {e}")
-            print(f"❌ Lỗi khi lưu các thiết lập: {e}")
 
     def delayed_save_settings(self):
         if hasattr(self, "_save_timer"):
