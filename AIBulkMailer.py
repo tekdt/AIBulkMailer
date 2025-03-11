@@ -37,7 +37,8 @@ SMTP_CONFIG = {
     "AOL": {"server": "smtp.aol.com", "port_ssl": 465, "port_tls": 587},
     "Mailersend": {"server": "smtp.mailersend.net", "port_tls": 587},
     "Hotmail/Outlook": {"server": "smtp-mail.outlook.com", "port_ssl": 465, "port_tls": 587},
-    "Yandex": {"server": "smtp.yandex.com", "port_ssl": 465, "port_tls": 587}
+    "Yandex": {"server": "smtp.yandex.com", "port_ssl": 465, "port_tls": 587},
+    "ZohoMail": {"server": "smtp.zoho.com", "port_ssl": 465, "port_tls": 587}
 }
 
 # Cấu hình Mô hình AI
