@@ -27,6 +27,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 import dns.resolver
 from PyQt6.QtCore import QTimer
+from PyQt6.QtGui import QIcon
+
+self.setWindowIcon(QIcon("icon.ico"))  # Đặt icon cho cửa sổ
 
 SETTINGS_FILE = "settings.json"
 
