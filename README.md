@@ -2,7 +2,7 @@
 - Tên phần mềm: AI Bulk Mailer
 - Tác giả: TekDT
 - Mô tả: Phần mềm gửi email hàng loạt với khả năng hỗ trợ đa luồng, tạo nội dung tự động bằng nhiều mô hình AI và thu thập tất cả email trên một trang web.
-- Ngày phát hành: 08-03-2025
+- Ngày phát hành: 12-03-2025
 - Phiên bản: 1.1.0
 - Email: dinhtrungtek@gmail.com
 - Telegram: @tekdt1152
