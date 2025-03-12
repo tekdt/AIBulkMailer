@@ -4,8 +4,10 @@ import csv
 import time
 import random
 import json
+import sys
 import os
 import requests
+import ctypes
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 import msal
@@ -28,8 +30,6 @@ from urllib.parse import urlparse
 import dns.resolver
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QIcon
-
-self.setWindowIcon(QIcon("icon.ico"))  # Đặt icon cho cửa sổ
 
 SETTINGS_FILE = "settings.json"
 
@@ -378,7 +378,13 @@ class BulkEmailSender(QWidget):
         self.custom_port_input.textChanged.connect(self.delayed_save_settings)
         self.rich_editor.textChanged.connect(self.delayed_save_settings)
         self.raw_editor.textChanged.connect(self.delayed_save_settings)
+        self.min_delay_input.textChanged.connect(self.delayed_save_settings)
+        self.max_delay_input.textChanged.connect(self.delayed_save_settings)
         self.ai_server_combo.currentIndexChanged.connect(self.delayed_save_settings)
+        self.oauth_checkbox.stateChanged.connect(self.delayed_save_settings)
+        self.client_id_input.textChanged.connect(self.delayed_save_settings)
+        self.client_secret_input.textChanged.connect(self.delayed_save_settings)
+        self.refresh_token_input.textChanged.connect(self.delayed_save_settings)
         self.api_key_input.textChanged.connect(self.delayed_save_settings)
         self.prompt_input.textChanged.connect(self.delayed_save_settings)
         self.generated_output.textChanged.connect(self.delayed_save_settings)
@@ -390,6 +396,13 @@ class BulkEmailSender(QWidget):
         self.thread_count_input.textChanged.connect(self.delayed_save_settings)
 
     def initUI(self):
+        # Lấy đường dẫn file logo.ico
+        if hasattr(sys, "_MEIPASS"):  # Nếu chạy từ file .exe
+            icon_path = os.path.join(sys._MEIPASS, "logo.ico")
+        else:  # Nếu chạy trực tiếp bằng Python
+            icon_path = "logo.ico"
+        self.setWindowIcon(QIcon(icon_path))  # Đặt icon cho cửa sổ
+        
         self.tabs = QTabWidget()
         
         # -------- Tab MAIN -------- #
@@ -1246,10 +1259,10 @@ class BulkEmailSender(QWidget):
                 self.custom_port_input.setText(str(settings.get("custom_port", "")))
                 self.rich_editor.setHtml(settings.get("email_body", ""))
                 self.raw_editor.setPlainText(settings.get("email_body", ""))
-                # self.ai_server_combo.setCurrentIndex(settings.get("ai_server_index", 0))
                 self.api_key_input.setText(settings.get("api_key", ""))
-                # self.update_model_combo()
                 self.prompt_input.setPlainText(settings.get("prompt", ""))
+                self.min_delay_input.setText(settings.get("min_delay", ""))
+                self.max_delay_input.setText(settings.get("max_delay", ""))
                 self.generated_output.setPlainText(settings.get("generated_content", ""))
                 self.auto_integration_checkbox.setChecked(settings.get("auto_integration", False))
                 self.recipients = settings.get("recipients", [])
@@ -1306,6 +1319,8 @@ class BulkEmailSender(QWidget):
             "client_id": self.client_id_input.text(),
             "client_secret": self.client_secret_input.text(),
             "refresh_token": self.refresh_token_input.text(),
+            "min_delay": self.min_delay_input.text(),
+            "max_delay": self.max_delay_input.text(),
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -1387,7 +1402,17 @@ class GatherEmailsWorker(QObject):
         self.is_running = False
 
 if __name__ == "__main__":
-    app = QApplication([])
+    # app = QApplication([])
+    app = QApplication(sys.argv)
+    
+    # Đặt icon cho Taskbar khi ứng dụng chạy
+    if hasattr(sys, "_MEIPASS"):
+        icon_path = os.path.join(sys._MEIPASS, "logo.ico")
+    else:
+        icon_path = "logo.ico"
+
+    app.setWindowIcon(QIcon(icon_path))  # Đặt biểu tượng cho ứng dụng
     window = BulkEmailSender()
+    window.setWindowIcon(QIcon(icon_path))  # Đặt biểu tượng cho cửa sổ
     window.show()
     app.exec()
