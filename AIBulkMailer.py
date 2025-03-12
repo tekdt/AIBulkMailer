@@ -759,7 +759,7 @@ class BulkEmailSender(QWidget):
         """Xử lý khi quá trình thu thập email hoàn tất"""
         self.extracted_emails = emails
         self.output_area.setText("\n".join(emails) if emails else "️⚠️ Không tìm thấy email nào.")
-        self.gather_status_label.setText(f"✅ Hoàn tất! Thu thập {len(emails)} email.")
+        # self.gather_status_label.setText(f"✅ Hoàn tất! Thu thập {len(emails)} email.")
         self.gather_button.setEnabled(True)
         self.stop_gathering_button.setEnabled(False)
         self.export_button.setEnabled(bool(emails))
@@ -837,7 +837,6 @@ class BulkEmailSender(QWidget):
             
             return None  # Không tìm thấy sitemap
         except Exception as e:
-            self.output_area.setText(f"❌ Lỗi khi lấy sitemap: {e}")
             return None
 
     def parse_sitemap(self, sitemap_url):
@@ -846,10 +845,10 @@ class BulkEmailSender(QWidget):
         try:
             response = requests.get(sitemap_url, timeout=10)
             if response.status_code != 200:
-                self.output_area.setText(f"❌ Không thể tải sitemap: {response.status_code}")
+                # self.output_area.setText(f"❌ Không thể tải sitemap: {response.status_code}")
                 return []
 
-            self.status_label.setText("♾️ Đang trích xuất tất cả liên kết bên trong sitemap")
+            # self.status_label.setText("♾️ Đang trích xuất tất cả liên kết bên trong sitemap")
             content = response.content.decode('utf-8', errors='ignore')
             root = ET.fromstring(content)
             namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
@@ -860,13 +859,12 @@ class BulkEmailSender(QWidget):
                     urls.extend(self.parse_sitemap(url))
                 else:
                     urls.append(url)
-
             return urls
         except ET.ParseError as e:
-            self.output_area.setText(f"❌ Lỗi khi phân tích sitemap: {e}")
+            # self.output_area.setText(f"❌ Lỗi khi phân tích sitemap: {e}")
             return []
         except Exception as e:
-            self.output_area.setText(f"❌ Lỗi không xác định khi phân tích sitemap: {e}")
+            # self.output_area.setText(f"❌ Lỗi không xác định khi phân tích sitemap: {e}")
             return []
     
     def fetch_html(self, url):
