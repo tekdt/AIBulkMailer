@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 import dns.resolver
 from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QIntValidator
 
 SETTINGS_FILE = "settings.json"
 
@@ -95,8 +95,9 @@ class EmailSenderWorker(QObject):
     progress_signal = pyqtSignal(int)
     summary_signal = pyqtSignal(dict)
 
-    def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None,
-                 use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=1, max_delay=5):
+    # def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None,
+                 # use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=1, max_delay=5):
+    def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None, use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=None, max_delay=None):
         super().__init__()
         self.smtp_server = smtp_server
         self.port = port
@@ -518,11 +519,15 @@ class BulkEmailSender(QWidget):
         row4.addWidget(self.file_button)
         self.min_delay_label = QLabel("Chờ từ")
         row4.addWidget(self.min_delay_label)
-        self.min_delay_input = QLineEdit("30")
+        self.min_delay_input = QLineEdit("120")
+        self.min_delay_input.setValidator(QIntValidator())
+        self.min_delay_input.setPlaceholderText("Chỉ nhập số nguyên")
         row4.addWidget(self.min_delay_input)
         self.max_delay_label = QLabel("tới")
         row4.addWidget(self.max_delay_label)
-        self.max_delay_input = QLineEdit("60")
+        self.max_delay_input = QLineEdit("300")
+        self.max_delay_input.setValidator(QIntValidator())
+        self.max_delay_input.setPlaceholderText("Chỉ nhập số nguyên")
         row4.addWidget(self.max_delay_input)
         self.sencond_sendmail_label = QLabel("giây, trước khi gửi mỗi mail")
         row4.addWidget(self.sencond_sendmail_label)
@@ -1120,8 +1125,17 @@ class BulkEmailSender(QWidget):
         api_key = self.api_key_input.text().strip()
         ai_prompt = self.prompt_input.toPlainText().strip()
         model = self.model_combo.currentText()
-        min_delay = float(self.min_delay_input.text().strip())
-        max_delay = float(self.max_delay_input.text().strip())
+        # Lấy và kiểm tra giá trị min_delay và max_delay từ giao diện
+        try:
+            min_delay = int(self.min_delay_input.text().strip())
+            max_delay = int(self.max_delay_input.text().strip())
+            if min_delay < 0 or max_delay < 0 or min_delay > max_delay:
+                raise ValueError("Giá trị không hợp lệ")
+        except ValueError:
+            self.status_label.setText("⚠️ Vui lòng nhập giá trị hợp lệ cho thời gian chờ.")
+            self.send_button.setEnabled(True)
+            self.is_sending = False
+            return
         
         self.progress_bar.setRange(0, len(self.recipients))
         self.progress_bar.setValue(0)
@@ -1129,7 +1143,8 @@ class BulkEmailSender(QWidget):
         self.status_label.setText("♾️ Đang gửi mail...")
 
         self.thread = QThread()
-        self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model)
+        # self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model)
+        self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model, min_delay=min_delay, max_delay=max_delay)
         self.worker.moveToThread(self.thread)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
         self.worker.log_signal.connect(lambda msg: self.log_output.append(msg))
