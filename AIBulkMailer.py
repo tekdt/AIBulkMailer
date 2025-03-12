@@ -667,6 +667,7 @@ class BulkEmailSender(QWidget):
             self.worker.stop()  # Gọi phương thức stop của worker
             self.thread.quit()  # Thoát luồng
             self.thread.wait()  # Đợi luồng dừng hoàn toàn
+            self.thread = None  # Xóa tham chiếu đến luồng cũ
             self.is_sending = False
             self.status_label.setText("⛔ Quá trình gửi email đã bị dừng.")
             self.send_button.setEnabled(True)
@@ -1351,17 +1352,24 @@ class BulkEmailSender(QWidget):
     
     def closeEvent(self, event):
         self.save_settings()
-        if self.thread and self.thread.isRunning():
-            self.thread.quit()
-            self.thread.wait()
-            self.thread.deleteLater()
-            self.thread = None
-        if self.gen_thread and self.gen_thread.isRunning():
-            self.gen_thread.quit()
-            self.gen_thread.wait()
-            self.gen_thread.deleteLater()
-            self.gen_thread = None
-        event.accept()
+        # if self.thread and self.thread.isRunning():
+        try:
+            if hasattr(self, 'thread') and self.thread is not None:
+                if self.thread.isRunning():
+                    self.thread.quit()
+                    self.thread.wait()
+                    self.thread.deleteLater()
+                    self.thread = None
+            # if self.gen_thread and self.gen_thread.isRunning():
+            if hasattr(self, 'gen_thread') and self.gen_thread is not None:
+                if self.gen_thread.isRunning():
+                    self.gen_thread.quit()
+                    self.gen_thread.wait()
+                    self.gen_thread.deleteLater()
+                    self.gen_thread = None
+                event.accept()
+        except RuntimeError:
+            pass
 
 class GatherEmailsWorker(QObject):
     finished = pyqtSignal(set)  # Tín hiệu hoàn tất thu thập
