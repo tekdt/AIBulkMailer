@@ -2,6 +2,7 @@ import smtplib
 import ssl
 import csv
 import time
+import random
 import json
 import os
 import requests
@@ -92,7 +93,7 @@ class EmailSenderWorker(QObject):
     summary_signal = pyqtSignal(dict)
 
     def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None,
-                 use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None):
+                 use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=1, max_delay=5):
         super().__init__()
         self.smtp_server = smtp_server
         self.port = port
@@ -114,6 +115,8 @@ class EmailSenderWorker(QObject):
         self.api_key = api_key
         self.ai_prompt = ai_prompt  # Prompt cơ bản từ giao diện
         self.model = model
+        self.min_delay = min_delay
+        self.max_delay = max_delay
 
     def stop(self):
         """Đặt cờ để dừng quá trình gửi email"""
@@ -254,6 +257,12 @@ class EmailSenderWorker(QObject):
                     self.log_signal.emit(f"❌ Gửi mail không thành công tới {recipient}: {ex}")
                 finally:
                     self.progress_signal.emit(idx + 1)
+                    
+                # Thời gian chờ ngẫu nhiên giữa các lần gửi
+                delay_time = random.uniform(self.min_delay, self.max_delay)
+                self.log_signal.emit(f"⏳ Đang chờ {delay_time:.2f} giây trước khi gửi mail tiếp theo...")
+                time.sleep(delay_time)
+                
             server.quit()
 
             summary = {
@@ -491,6 +500,16 @@ class BulkEmailSender(QWidget):
         self.file_button = QPushButton("Tải danh sách người nhận (CSV)")
         self.file_button.clicked.connect(self.load_csv)
         row4.addWidget(self.file_button)
+        self.min_delay_label = QLabel("Chờ từ")
+        row4.addWidget(self.min_delay_label)
+        self.min_delay_input = QLineEdit("30")
+        row4.addWidget(self.min_delay_input)
+        self.max_delay_label = QLabel("tới")
+        row4.addWidget(self.max_delay_label)
+        self.max_delay_input = QLineEdit("60")
+        row4.addWidget(self.max_delay_input)
+        self.sencond_sendmail_label = QLabel("giây, trước khi gửi mỗi mail")
+        row4.addWidget(self.sencond_sendmail_label)
         self.send_button = QPushButton("Gửi mail")
         self.send_button.clicked.connect(self.send_emails)
         row4.addWidget(self.send_button)
@@ -589,8 +608,8 @@ class BulkEmailSender(QWidget):
         about_info = {
             "Tác giả": "TekDT",
             "Phần mềm": "AIBulkMailer",
-            "Phiên bản": "1.0.1",
-            "Ngày phát hành": "10/03/2025",
+            "Phiên bản": "1.1.0",
+            "Ngày phát hành": "12/03/2025",
             "Mô tả": "Phần mềm gửi email hàng loạt với khả năng hỗ trợ đa luồng, tạo nội dung tự động bằng nhiều mô hình AI và thu thập tất cả email trên một trang web."
         }
         for key, value in about_info.items():
@@ -1087,6 +1106,8 @@ class BulkEmailSender(QWidget):
         api_key = self.api_key_input.text().strip()
         ai_prompt = self.prompt_input.toPlainText().strip()
         model = self.model_combo.currentText()
+        min_delay = float(self.min_delay_input.text().strip())
+        max_delay = float(self.max_delay_input.text().strip())
         
         self.progress_bar.setRange(0, len(self.recipients))
         self.progress_bar.setValue(0)
@@ -1094,7 +1115,6 @@ class BulkEmailSender(QWidget):
         self.status_label.setText("♾️ Đang gửi mail...")
 
         self.thread = QThread()
-        # self.worker = EmailSenderWorker(smtp_server, port, self.email_input.text().strip(), self.password_input.text().strip(), self.subject_input.text().strip(), self.rich_editor.toHtml(), self.recipients, connection_security, self.reply_input.text().strip())
         self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model)
         self.worker.moveToThread(self.thread)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
