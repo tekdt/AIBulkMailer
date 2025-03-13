@@ -241,6 +241,10 @@ class EmailSenderWorker(QObject):
                 # Nếu auto_integration được bật, tạo nội dung mới cho mỗi email
                 if self.auto_integration:
                     unique_body = self.generate_unique_content(recipient)
+                    # **Kiểm tra nội dung trước khi gửi**
+                    if not unique_body or not self.is_valid_content(unique_body):
+                        self.log_signal.emit(f"⚠️ Nội dung không hợp lệ cho {recipient}, không gửi email.")
+                        continue
                 else:
                     unique_body = self.body
                    
@@ -396,11 +400,43 @@ class ContentGeneratorWorker(QObject):
             else:
                 # Xử lý các máy chủ AI khác (Groq, Gemini, v.v.) tại đây
                 generated = "Đây là nội dung email được tạo tự động (mô phỏng). Không nên áp dụng vào nội dung mail của bạn."  # Giữ mô phỏng cho các trường hợp khác
+            
+            # **Điều kiện 1: Kiểm tra nội dung có rỗng không**
+            if not generated.strip():
+                self.error_signal.emit("Nội dung rỗng")
+                return
+
+            # **Điều kiện 2: Kiểm tra từ khóa cấm**
+            if self.contains_banned_words(generated):
+                self.error_signal.emit("Nội dung chứa từ cấm")
+                return
+
+            # **Điều kiện 3: Kiểm tra định dạng HTML (nếu nội dung là HTML)**
+            if not self.is_valid_html(generated):
+                self.error_signal.emit("HTML không hợp lệ")
+                return
+            
             self.result_signal.emit(generated)
         except Exception as e:
             self.error_signal.emit(f"Lỗi khi gọi AI: {str(e)}")
         finally:
             QThread.currentThread().quit()  # Thêm dòng này để đảm bảo thread dừng an toàn
+            
+    def is_valid_html(self, html):
+        """Kiểm tra xem chuỗi có phải là HTML hợp lệ không"""
+        try:
+            BeautifulSoup(html, 'html.parser')
+            return True
+        except:
+            return False
+
+    def contains_banned_words(self, text):
+        """Kiểm tra xem nội dung có chứa từ cấm không"""
+        banned_words = ['lỗi', 'không hợp lệ', 'xin lỗi', 'error', 'sorry', 'invalid']  # Danh sách từ cấm, có thể tùy chỉnh
+        for word in banned_words:
+            if word.lower() in text.lower():
+                return True
+        return False
 
 # ---------------- Main Application ---------------- #
 class BulkEmailSender(QWidget):
@@ -1291,6 +1327,15 @@ class BulkEmailSender(QWidget):
         self.gen_status_label.setText("✅ Tạo nội dung thành công!")
         self.generate_button.setEnabled(True)
         self.apply_button.setEnabled(True)
+        
+        # **Điều kiện: Yêu cầu người dùng xác nhận**
+        reply = QMessageBox.question(self, 'Xác nhận nội dung',
+                                     'Bạn có muốn áp dụng nội dung này cho email không?',
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self.apply_generated_content()  # Áp dụng nội dung nếu được xác nhận
+        else:
+            self.gen_status_label.setText("⚠️ Nội dung không được áp dụng.")
 
     def on_gen_error(self, error_msg):
         self.gen_status_label.setText(f"❌ Lỗi: {error_msg}")
