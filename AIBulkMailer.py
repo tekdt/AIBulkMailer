@@ -180,7 +180,6 @@ class EmailSenderWorker(QObject):
         successes = 0
         try:
             start_time = time.time()
-            timeout = 300  # Giới hạn thời gian 5 phút
             context = ssl.create_default_context()                
                 
             # Chọn kiểu kết nối và xác thực dựa trên use_oauth
@@ -237,60 +236,72 @@ class EmailSenderWorker(QObject):
                     if hasattr(self, "server") and self.server:
                         self.server.quit()
                     return
-                if time.time() - start_time > timeout:
-                    self.error_signal.emit("⛔ Quá trình gửi email vượt quá thời gian cho phép.")
-                    return
                     
                 # Nếu auto_integration được bật, tạo nội dung mới cho mỗi email
                 if self.auto_integration:
                     unique_body = self.generate_unique_content(recipient)
                 else:
                     unique_body = self.body
-                    
-                try:
-                    msg = MIMEMultipart()
-                    msg['From'] = self.sender_email
-                    msg['To'] = recipient
-                    msg['Subject'] = self.subject
-                    if self.reply_to:
-                        msg['Reply-To'] = self.reply_to
-                    msg.attach(MIMEText(unique_body, 'html'))
-                    server.sendmail(self.sender_email, recipient, msg.as_string())
-                    successes += 1
-                    self.log_signal.emit(f"✅ Email được gửi tới {recipient}")
-                
-                except smtplib.SMTPServerDisconnected:
-                    self.error_signal.emit("❌ Máy chủ SMTP ngắt kết nối. Hãy kiểm tra cài đặt SMTP.")
-                    return  # Dừng ngay lập tức
-                except smtplib.SMTPAuthenticationError:
-                    self.error_signal.emit("❌ Lỗi xác thực: Tài khoản có thể bị khóa do hoạt động bất thường.")
-                    return  # Dừng ngay lập tức
-                except smtplib.SMTPConnectError:
-                    self.error_signal.emit("❌ Không thể kết nối đến máy chủ SMTP. Kiểm tra kết nối mạng.")
-                    return  # Dừng ngay lập tức
-                except smtplib.SMTPException as e:
-                    error_message = str(e)
-                    if "please run connect() first" in error_message.lower():
-                        self.error_signal.emit("❌ Lỗi: Máy chủ yêu cầu kết nối trước khi gửi email. Hãy thử lại sau.")
-                        return  # Dừng ngay lập tức
-                    if "unusual sending activity" in error_message.lower():
-                        self.error_signal.emit("⚠️ Cảnh báo: Hoạt động gửi mail bất thường! Dừng ngay để tránh bị đánh spam.")
-                        return  # Dừng ngay lập tức
-                    failures[recipient] = error_message
-                    self.log_signal.emit(f"❌ Gửi mail không thành công tới {recipient}: {error_message}")
-                finally:
-                    self.progress_signal.emit(idx + 1)
-                    
-                # Thời gian chờ ngẫu nhiên giữa các lần gửi
+                   
+                # Thử gửi email tối đa 3 lần
+                for attempt in range(3):
+                    try:
+                        msg = MIMEMultipart()
+                        msg['From'] = self.sender_email
+                        msg['To'] = recipient
+                        msg['Subject'] = self.subject
+                        if self.reply_to:
+                            msg['Reply-To'] = self.reply_to
+                        msg.attach(MIMEText(unique_body, 'html'))
+                        server.sendmail(self.sender_email, recipient, msg.as_string())
+                        successes += 1
+                        self.log_signal.emit(f"✅ Email được gửi tới {recipient}")
+                        break  # Thoát vòng lặp nếu gửi thành công
+                    except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError) as e:
+                        if attempt < 2:  # Thử lại nếu chưa đủ 3 lần
+                            self.log_signal.emit(f"⚠️ Lỗi khi gửi tới {recipient}: {str(e)}. Thử lại lần {attempt + 2}...")
+                            time.sleep(5)  # Chờ 5 giây trước khi thử lại
+                            # Thử kết nối lại server nếu bị ngắt
+                            try:
+                                if self.connection_security == "SSL":
+                                    server = smtplib.SMTP_SSL(self.smtp_server, self.port, context=context, timeout=30)
+                                elif self.connection_security == "TLS":
+                                    server = smtplib.SMTP(self.smtp_server, self.port, timeout=30)
+                                    server.ehlo()
+                                    server.starttls(context=context)
+                                    server.ehlo()
+                                else:
+                                    server = smtplib.SMTP(self.smtp_server, self.port, timeout=30)
+                                server.login(self.sender_email, self.password)
+                            except Exception as reconnect_error:
+                                self.log_signal.emit(f"❌ Lỗi khi kết nối lại server: {str(reconnect_error)}")
+                        else:
+                            failures[recipient] = str(e)
+                            self.log_signal.emit(f"❌ Gửi mail không thành công tới {recipient} sau 3 lần thử: {str(e)}")
+                    except smtplib.SMTPException as e:
+                        error_message = str(e)
+                        if "please run connect() first" in error_message.lower():
+                            self.error_signal.emit("❌ Lỗi: Máy chủ yêu cầu kết nối trước khi gửi email. Hãy thử lại sau.")
+                            return
+                        if "unusual sending activity" in error_message.lower():
+                            self.error_signal.emit("⚠️ Cảnh báo: Hoạt động gửi mail bất thường! Dừng ngay để tránh bị đánh spam.")
+                            return
+                        failures[recipient] = error_message
+                        self.log_signal.emit(f"❌ Gửi mail không thành công tới {recipient}: {error_message}")
+                        break  # Không thử lại với các lỗi khác
+
+                # Thời gian chờ ngẫu nhiên giữa các email
                 delay_time = random.uniform(self.min_delay, self.max_delay)
                 self.log_signal.emit(f"⏳ Đang chờ {delay_time:.2f} giây trước khi gửi mail tiếp theo...")
-                for _ in range(int(delay_time * 10)):  # Kiểm tra dừng mỗi 100ms
+                for _ in range(int(delay_time * 10)):
                     if self.should_stop:
                         self.error_signal.emit("⛔ Quá trình gửi email đã bị dừng.")
                         if hasattr(self, "server") and self.server:
                             self.server.quit()
                         return
                     QThread.msleep(100)
+
+                self.progress_signal.emit(idx + 1)
                 
             server.quit()
 
