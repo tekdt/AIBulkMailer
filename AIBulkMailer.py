@@ -330,6 +330,12 @@ class EmailSenderWorker(QObject):
             self.error_signal.emit(f"❌ Đã xảy ra lỗi: {str(e)}")
         finally:
             pass
+            
+    def is_valid_content(self, content):
+        """Kiểm tra nội dung có hợp lệ để gửi không"""
+        if not content.strip():
+            return False
+        return True  # Có thể thêm các điều kiện khác nếu cần
     
 def closeEvent(self, event):
     self.save_settings()
