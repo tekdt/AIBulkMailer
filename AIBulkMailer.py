@@ -42,7 +42,8 @@ SMTP_CONFIG = {
     "Mailersend": {"server": "smtp.mailersend.net", "port_tls": 587},
     "Hotmail/Outlook": {"server": "smtp-mail.outlook.com", "port_ssl": 465, "port_tls": 587},
     "Yandex": {"server": "smtp.yandex.com", "port_ssl": 465, "port_tls": 587},
-    "ZohoMail": {"server": "smtp.zoho.com", "port_ssl": 465, "port_tls": 587}
+    "ZohoMail": {"server": "smtp.zoho.com", "port_ssl": 465, "port_tls": 587},
+    "Proton": {"server": "smtp.protonmail.ch", "port_tls": 587}
 }
 
 # Cấu hình Mô hình AI
@@ -125,6 +126,7 @@ class EmailSenderWorker(QObject):
     def stop(self):
         """Đặt cờ để dừng quá trình gửi email"""
         self.should_stop = True
+        self.error_signal.emit("⛔ Đang dừng...")    
     
     def remove_think_tags(self, content):
         """Xóa toàn bộ nội dung nằm trong thẻ <think>...</think>"""
@@ -227,13 +229,13 @@ class EmailSenderWorker(QObject):
                 except smtplib.SMTPAuthenticationError:
                     self.error_signal.emit("❌ Xác thực thất bại: Kiểm tra email và mật khẩu")
                     return
-            
-            
 
             # Gửi email đến từng người nhận
             for idx, recipient in enumerate(self.recipients):
                 if self.should_stop:
                     self.error_signal.emit("⛔ Quá trình gửi email đã bị dừng.")
+                    if hasattr(self, "server") and self.server:
+                        self.server.quit()
                     return
                 if time.time() - start_time > timeout:
                     self.error_signal.emit("⛔ Quá trình gửi email vượt quá thời gian cho phép.")
@@ -256,16 +258,39 @@ class EmailSenderWorker(QObject):
                     server.sendmail(self.sender_email, recipient, msg.as_string())
                     successes += 1
                     self.log_signal.emit(f"✅ Email được gửi tới {recipient}")
-                except Exception as ex:
-                    failures[recipient] = str(ex)
-                    self.log_signal.emit(f"❌ Gửi mail không thành công tới {recipient}: {ex}")
+                
+                except smtplib.SMTPServerDisconnected:
+                    self.error_signal.emit("❌ Máy chủ SMTP ngắt kết nối. Hãy kiểm tra cài đặt SMTP.")
+                    return  # Dừng ngay lập tức
+                except smtplib.SMTPAuthenticationError:
+                    self.error_signal.emit("❌ Lỗi xác thực: Tài khoản có thể bị khóa do hoạt động bất thường.")
+                    return  # Dừng ngay lập tức
+                except smtplib.SMTPConnectError:
+                    self.error_signal.emit("❌ Không thể kết nối đến máy chủ SMTP. Kiểm tra kết nối mạng.")
+                    return  # Dừng ngay lập tức
+                except smtplib.SMTPException as e:
+                    error_message = str(e)
+                    if "please run connect() first" in error_message.lower():
+                        self.error_signal.emit("❌ Lỗi: Máy chủ yêu cầu kết nối trước khi gửi email. Hãy thử lại sau.")
+                        return  # Dừng ngay lập tức
+                    if "unusual sending activity" in error_message.lower():
+                        self.error_signal.emit("⚠️ Cảnh báo: Hoạt động gửi mail bất thường! Dừng ngay để tránh bị đánh spam.")
+                        return  # Dừng ngay lập tức
+                    failures[recipient] = error_message
+                    self.log_signal.emit(f"❌ Gửi mail không thành công tới {recipient}: {error_message}")
                 finally:
                     self.progress_signal.emit(idx + 1)
                     
                 # Thời gian chờ ngẫu nhiên giữa các lần gửi
                 delay_time = random.uniform(self.min_delay, self.max_delay)
                 self.log_signal.emit(f"⏳ Đang chờ {delay_time:.2f} giây trước khi gửi mail tiếp theo...")
-                time.sleep(delay_time)
+                for _ in range(int(delay_time * 10)):  # Kiểm tra dừng mỗi 100ms
+                    if self.should_stop:
+                        self.error_signal.emit("⛔ Quá trình gửi email đã bị dừng.")
+                        if hasattr(self, "server") and self.server:
+                            self.server.quit()
+                        return
+                    QThread.msleep(100)
                 
             server.quit()
 
@@ -664,13 +689,11 @@ class BulkEmailSender(QWidget):
     
     def stop_sending(self):
         if self.is_sending and self.worker:
-            self.worker.stop()  # Gọi phương thức stop của worker
-            self.thread.quit()  # Thoát luồng
-            self.thread.wait()  # Đợi luồng dừng hoàn toàn
-            self.thread = None  # Xóa tham chiếu đến luồng cũ
-            self.is_sending = False
+            self.worker.stop()  # Dừng worker trước
+            if self.thread is not None and self.thread.isRunning():
+                self.thread.quit()  # Chỉ dừng luồng nếu nó tồn tại và đang chạy
+                self.thread.wait()  # Đợi luồng dừng hoàn toàn
             self.status_label.setText("⛔ Quá trình gửi email đã bị dừng.")
-            self.send_button.setEnabled(True)
             self.stop_sending_button.setEnabled(False)
     
     def setup_gather_tab(self):
@@ -1144,7 +1167,6 @@ class BulkEmailSender(QWidget):
         self.status_label.setText("♾️ Đang gửi mail...")
 
         self.thread = QThread()
-        # self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model)
         self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model, min_delay=min_delay, max_delay=max_delay)
         self.worker.moveToThread(self.thread)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
@@ -1164,14 +1186,13 @@ class BulkEmailSender(QWidget):
     def on_error(self, error_msg):
         self.status_label.setText(f"❌ Lỗi: {error_msg}")
         self.log_output.append(f"❌ Lỗi: {error_msg}")
-        self.send_button.setEnabled(True)
-        # Nếu thread vẫn đang chạy, hãy dừng nó
         if self.thread is not None and self.thread.isRunning():
             self.thread.quit()
             self.thread.wait()
             self.thread.deleteLater()
             self.thread = None
-        self.is_sending = False  # Reset flag khi có lỗi
+        self.send_button.setEnabled(True)
+        self.is_sending = False
 
     def on_summary(self, summary):
         total = summary["total"]
@@ -1186,13 +1207,13 @@ class BulkEmailSender(QWidget):
             self.log_output.append("❌ Danh sách gửi không thành công:")
             for recipient, error in failed_recipients.items():
                 self.log_output.append(f"- {recipient}: {error}")
-        if self.thread is not None:
+        if self.thread is not None and self.thread.isRunning():
             self.thread.quit()
             self.thread.wait()
             self.thread.deleteLater()
             self.thread = None
         self.send_button.setEnabled(True)
-        self.is_sending = False  # Reset flag khi hoàn thành
+        self.is_sending = False
 
     def generate_content(self):
         # Kiểm tra nếu có thread cũ, đảm bảo nó đã kết thúc hoàn toàn trước khi tạo mới
