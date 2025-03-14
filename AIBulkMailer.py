@@ -21,7 +21,7 @@ import google.generativeai as genai
 from bs4 import BeautifulSoup
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QFileDialog, QLineEdit, QTextEdit, QProgressBar, QComboBox, QTabWidget, QCheckBox
+    QFileDialog, QLineEdit, QTextEdit, QProgressBar, QComboBox, QTabWidget, QCheckBox, QMessageBox
 )
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread
 import xml.etree.ElementTree as ET
@@ -293,7 +293,7 @@ class EmailSenderWorker(QObject):
                         if "unusual sending activity" in error_message.lower():
                             self.error_signal.emit("⚠️ Cảnh báo: Hoạt động gửi mail bất thường! Dừng ngay để tránh bị đánh spam.")
                             return
-                        if "Message rejected under suspicion of SPAM" in error_message.lower():
+                        if "rejected under suspicion" in error_message.lower():
                             self.error_signal.emit("⚠️ Cảnh báo: Hoạt động gửi mail bất thường! Dừng ngay để tránh bị đánh spam.")
                             return
                         failures[recipient] = error_message
@@ -448,6 +448,7 @@ class ContentGeneratorWorker(QObject):
 class BulkEmailSender(QWidget):
     def __init__(self):
         super().__init__()
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window)
         self.initUI()
         self.load_settings()
         self.is_sending = False
@@ -481,13 +482,6 @@ class BulkEmailSender(QWidget):
         self.thread_count_input.textChanged.connect(self.delayed_save_settings)
 
     def initUI(self):
-        # Lấy đường dẫn file logo.ico
-        if hasattr(sys, "_MEIPASS"):  # Nếu chạy từ file .exe
-            icon_path = os.path.join(sys._MEIPASS, "logo.ico")
-        else:  # Nếu chạy trực tiếp bằng Python
-            icon_path = "logo.ico"
-        self.setWindowIcon(QIcon(icon_path))  # Đặt icon cho cửa sổ
-        
         self.tabs = QTabWidget()
         
         # -------- Tab MAIN -------- #
@@ -1247,7 +1241,7 @@ class BulkEmailSender(QWidget):
         if email in self.recipients:
             self.recipients.remove(email)  # Xóa email khỏi danh sách
             self.save_settings()           # Lưu ngay vào settings.json
-            self.log_output.append(f"✅ Đã xóa email gửi thành công: {email}")
+            # self.log_output.append(f"✅ Đã xóa email gửi thành công: {email}")
     
     def on_error(self, error_msg):
         self.status_label.setText(f"❌ Lỗi: {error_msg}")
@@ -1336,9 +1330,10 @@ class BulkEmailSender(QWidget):
         
         # **Điều kiện: Yêu cầu người dùng xác nhận**
         reply = QMessageBox.question(self, 'Xác nhận nội dung',
-                                     'Bạn có muốn áp dụng nội dung này cho email không?',
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply == QMessageBox.Yes:
+                             'Bạn có muốn áp dụng nội dung này cho email không?',
+                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                             QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
             self.apply_generated_content()  # Áp dụng nội dung nếu được xác nhận
         else:
             self.gen_status_label.setText("⚠️ Nội dung không được áp dụng.")
@@ -1519,8 +1514,8 @@ class GatherEmailsWorker(QObject):
         self.is_running = False
 
 if __name__ == "__main__":
-    # app = QApplication([])
-    app = QApplication(sys.argv)
+    app = QApplication([])
+    # app = QApplication(sys.argv)
     
     # Đặt icon cho Taskbar khi ứng dụng chạy
     if hasattr(sys, "_MEIPASS"):
