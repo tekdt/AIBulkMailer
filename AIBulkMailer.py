@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 import dns.resolver
 from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QIcon, QIntValidator
+from PyQt6.QtGui import QIcon, QIntValidator\
 
 SETTINGS_FILE = "settings.json"
 
@@ -99,7 +99,7 @@ class EmailSenderWorker(QObject):
 
     # def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None,
                  # use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=1, max_delay=5):
-    def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None, use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=None, max_delay=None):
+    def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None, cc=None, bcc=None, use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=None, max_delay=None):
         super().__init__()
         self.smtp_server = smtp_server
         self.port = port
@@ -109,6 +109,8 @@ class EmailSenderWorker(QObject):
         self.body = body  # Mẫu nội dung cơ bản nếu không tích hợp AI
         self.recipients = recipients
         self.reply_to = reply_to
+        self.cc = cc
+        self.bcc = bcc
         self.connection_security = connection_security
         self.use_oauth = use_oauth  # Thêm cờ để bật/tắt OAuth2
         self.oauth_config = oauth_config  # Cấu hình OAuth2 (client_id, client_secret, token_url, ...)
@@ -255,10 +257,23 @@ class EmailSenderWorker(QObject):
                         msg['From'] = self.sender_email
                         msg['To'] = recipient
                         msg['Subject'] = self.subject
+                        msg['Cc'] = self.cc
+                        all_recipients = [recipient]
+                        # Xử lý CC
+                        if self.cc:
+                            cc_list = [email.strip() for email in self.cc.split(",") if email.strip()]
+                            all_recipients += cc_list
+
+                        # Xử lý BCC
+                        if self.bcc:
+                            bcc_list = [email.strip() for email in self.bcc.split(",") if email.strip()]
+                            all_recipients += bcc_list
+
                         if self.reply_to:
                             msg['Reply-To'] = self.reply_to
                         msg.attach(MIMEText(unique_body, 'html'))
-                        server.sendmail(self.sender_email, recipient, msg.as_string())
+                        # server.sendmail(self.sender_email, recipient, msg.as_string())
+                        server.sendmail(self.sender_email, all_recipients, msg.as_string())
                         successes += 1
                         # Phát tín hiệu ngay khi gửi thành công
                         self.success_signal.emit(recipient)
@@ -291,25 +306,26 @@ class EmailSenderWorker(QObject):
                             self.error_signal.emit("❌ Lỗi: Máy chủ yêu cầu kết nối trước khi gửi email. Hãy thử lại sau.")
                             return
                         if "unusual sending activity" in error_message.lower():
-                            self.error_signal.emit("⚠️ Cảnh báo: Hoạt động gửi mail bất thường! Dừng ngay để tránh bị đánh spam.")
+                            self.error_signal.emit("⚠️ Cảnh báo: Hoạt động gửi mail bất thường! Chương trình dừng để tránh bị đánh spam.")
                             return
                         if "rejected under suspicion" in error_message.lower():
-                            self.error_signal.emit("⚠️ Cảnh báo: Hoạt động gửi mail bất thường! Dừng ngay để tránh bị đánh spam.")
+                            self.error_signal.emit("⚠️ Cảnh báo: Hoạt động gửi mail bị từ chối! Chương trình dừng để tránh bị đánh spam.")
                             return
                         failures[recipient] = error_message
                         self.log_signal.emit(f"❌ Gửi mail không thành công tới {recipient}: {error_message}")
                         break  # Không thử lại với các lỗi khác
 
                 # Thời gian chờ ngẫu nhiên giữa các email
-                delay_time = random.uniform(self.min_delay, self.max_delay)
-                self.log_signal.emit(f"⏳ Đang chờ {delay_time:.2f} giây trước khi gửi mail tiếp theo...")
-                for _ in range(int(delay_time * 10)):
-                    if self.should_stop:
-                        self.error_signal.emit("⛔ Quá trình gửi email đã bị dừng.")
-                        if hasattr(self, "server") and self.server:
-                            self.server.quit()
-                        return
-                    QThread.msleep(100)
+                if idx < len(self.recipients) - 1:  # Chỉ delay nếu còn email để gửi
+                    delay_time = random.uniform(self.min_delay, self.max_delay)
+                    self.log_signal.emit(f"⏳ Đang chờ {delay_time:.2f} giây trước khi gửi mail tiếp theo...")
+                    for _ in range(int(delay_time * 10)):
+                        if self.should_stop:
+                            self.error_signal.emit("⛔ Quá trình gửi email đã bị dừng.")
+                            if hasattr(self, "server") and self.server:
+                                self.server.quit()
+                            return
+                        QThread.msleep(100)
 
                 self.progress_signal.emit(idx + 1)
                 
@@ -454,11 +470,14 @@ class BulkEmailSender(QWidget):
         self.is_sending = False
         self.is_gathering = False
         self.extracted_emails = set()
+        self.recipients_sent = []  # Danh sách email đã gửi thành công
         # Gọi delayed_save_settings() mỗi khi người dùng nhập dữ liệu
         self.email_input.textChanged.connect(self.delayed_save_settings)
         self.password_input.textChanged.connect(self.delayed_save_settings)
         self.subject_input.textChanged.connect(self.delayed_save_settings)
         self.reply_input.textChanged.connect(self.delayed_save_settings)
+        self.cc_input.textChanged.connect(self.delayed_save_settings)
+        self.bcc_input.textChanged.connect(self.delayed_save_settings)
         self.provider_combo.currentIndexChanged.connect(self.delayed_save_settings)
         self.custom_smtp_input.textChanged.connect(self.delayed_save_settings)
         self.custom_port_input.textChanged.connect(self.delayed_save_settings)
@@ -509,6 +528,18 @@ class BulkEmailSender(QWidget):
         row2.addWidget(self.subject_label)
         row2.addWidget(self.subject_input)
         main_layout.addLayout(row2)
+        
+        # Row for CC & BCC
+        row_cc_bcc = QHBoxLayout()
+        self.cc_label = QLabel("CC:")
+        self.cc_input = QLineEdit()
+        row_cc_bcc.addWidget(self.cc_label)
+        row_cc_bcc.addWidget(self.cc_input)
+        self.bcc_label = QLabel("BCC:")
+        self.bcc_input = QLineEdit()
+        row_cc_bcc.addWidget(self.bcc_label)
+        row_cc_bcc.addWidget(self.bcc_input)
+        main_layout.addLayout(row_cc_bcc)
         
         # Row 3: Reply-To
         row_reply = QHBoxLayout()
@@ -706,9 +737,9 @@ class BulkEmailSender(QWidget):
         about_layout = QVBoxLayout()
         about_info = {
             "Tác giả": "TekDT",
-            "Phần mềm": "AIBulkMailer",
-            "Phiên bản": "1.1.0",
-            "Ngày phát hành": "12/03/2025",
+            "Phần mềm": "AI Bulk Mailer",
+            "Phiên bản": "1.2.0",
+            "Ngày phát hành": "19/03/2025",
             "Mô tả": "Phần mềm gửi email hàng loạt với khả năng hỗ trợ đa luồng, tạo nội dung tự động bằng nhiều mô hình AI và thu thập tất cả email trên một trang web."
         }
         for key, value in about_info.items():
@@ -1092,6 +1123,7 @@ class BulkEmailSender(QWidget):
         return True, "✅ Email hợp lệ."
 
     def send_emails(self):
+        self.recipients_sent = []  # Đặt lại danh sách email đã gửi trước đó
         # Kiểm tra xem có đang gửi email không
         if self.is_sending and self.thread and self.thread.isRunning():
             self.status_label.setText("♾️ Đang thực hiện gửi email. Vui lòng đợi.")
@@ -1115,6 +1147,8 @@ class BulkEmailSender(QWidget):
         password = self.password_input.text().strip()
         subject = self.subject_input.text().strip()
         reply_to = self.reply_input.text().strip()
+        cc = self.cc_input.text().strip()
+        bcc = self.bcc_input.text().strip()
 
         if self.tab_widget.currentIndex() == 1:
             self.rich_editor.setHtml(self.raw_editor.toPlainText())
@@ -1220,7 +1254,7 @@ class BulkEmailSender(QWidget):
         self.status_label.setText("♾️ Đang gửi mail...")
 
         self.thread = QThread()
-        self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model, min_delay=min_delay, max_delay=max_delay)
+        self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, cc=cc, bcc=bcc, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model, min_delay=min_delay, max_delay=max_delay)
         self.worker.success_signal.connect(self.on_email_sent_successfully)
         self.worker.moveToThread(self.thread)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
@@ -1240,8 +1274,14 @@ class BulkEmailSender(QWidget):
     def on_email_sent_successfully(self, email):
         if email in self.recipients:
             self.recipients.remove(email)  # Xóa email khỏi danh sách
-            self.save_settings()           # Lưu ngay vào settings.json
-            # self.log_output.append(f"✅ Đã xóa email gửi thành công: {email}")
+            self.recipients_sent.append(email)  # Thêm email vào danh sách đã gửi
+            
+        current_sent = len(self.recipients_sent)
+        total = current_sent + len(self.recipients)
+        self.status_label.setText(f"✅ Đã gửi đến {email} ({current_sent}/{total})")
+        self.save_settings()           # Lưu ngay vào settings.json
+        # Cập nhật thanh tiến trình
+        self.progress_bar.setValue(current_sent)
     
     def on_error(self, error_msg):
         self.status_label.setText(f"❌ Lỗi: {error_msg}")
@@ -1359,6 +1399,8 @@ class BulkEmailSender(QWidget):
                 self.password_input.setText(settings.get("password", ""))
                 self.subject_input.setText(settings.get("subject", ""))
                 self.reply_input.setText(settings.get("reply_to", ""))
+                self.cc_input.setText(settings.get("cc_input", ""))
+                self.bcc_input.setText(settings.get("bcc_input", ""))
                 self.provider_combo.setCurrentIndex(settings.get("smtp_provider_index", 0))
                 self.custom_smtp_input.setText(settings.get("custom_smtp", ""))
                 self.custom_port_input.setText(str(settings.get("custom_port", "")))
@@ -1403,6 +1445,8 @@ class BulkEmailSender(QWidget):
             "password": self.password_input.text(),
             "subject": self.subject_input.text(),
             "reply_to": self.reply_input.text(),
+            "cc_input": self.cc_input.text(),
+            "bcc_input": self.bcc_input.text(),
             "smtp_provider_index": self.provider_combo.currentIndex(),
             "custom_smtp": self.custom_smtp_input.text(),
             "custom_port": self.custom_port_input.text(),
