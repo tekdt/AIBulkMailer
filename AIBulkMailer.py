@@ -7,6 +7,7 @@ import json
 import sys
 import os
 import requests
+import http.cookiejar
 import ctypes
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -16,6 +17,7 @@ import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from openai import OpenAI
+from mistralai import Mistral
 import groq
 import google.generativeai as genai
 from bs4 import BeautifulSoup
@@ -29,31 +31,46 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 import dns.resolver
 from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QIcon, QIntValidator\
+from PyQt6.QtGui import QIcon, QIntValidator
+from lxml import html
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+if hasattr(sys, "_MEIPASS"):  # Khi chạy từ bundle của PyInstaller
+    icon_path = os.path.join(sys._MEIPASS, "logo.ico")
+else:  # Khi chạy từ mã nguồn
+    icon_path = "logo.ico"
 
 SETTINGS_FILE = "settings.json"
-
-# Cấu hình SMTP cho các nhà cung cấp có sẵn
-SMTP_CONFIG = {
-    "Gmail": {"server": "smtp.gmail.com", "port_ssl": 465, "port_tls": 587},
-    "Yahoo": {"server": "smtp.mail.yahoo.com", "port_ssl": 465, "port_tls": 587},
-    "Mailtrap": {"server": "live.smtp.mailtrap.io", "port_tls": 587},
-    "AOL": {"server": "smtp.aol.com", "port_ssl": 465, "port_tls": 587},
-    "Mailersend": {"server": "smtp.mailersend.net", "port_tls": 587},
-    "Hotmail/Outlook": {"server": "smtp-mail.outlook.com", "port_ssl": 465, "port_tls": 587},
-    "Yandex": {"server": "smtp.yandex.com", "port_ssl": 465, "port_tls": 587},
-    "ZohoMail": {"server": "smtp.zoho.com", "port_ssl": 465, "port_tls": 587},
-    "Proton": {"server": "smtp.protonmail.ch", "port_tls": 587}
+DEFAULT_SETTINGS = {
+    "lm_url_default": "http://localhost:1234",
+    "ollama_url_default": "http://localhost:11434",
+    "SMTP_CONFIG": {
+        "Gmail": {"server": "smtp.gmail.com", "port_ssl": 465, "port_tls": 587},
+        "Yahoo": {"server": "smtp.mail.yahoo.com", "port_ssl": 465, "port_tls": 587},
+        "Mailtrap": {"server": "live.smtp.mailtrap.io", "port_tls": 587},
+        "AOL": {"server": "smtp.aol.com", "port_ssl": 465, "port_tls": 587},
+        "Mailersend": {"server": "smtp.mailersend.net", "port_tls": 587},
+        "Hotmail/Outlook": {"server": "smtp-mail.outlook.com", "port_ssl": 465, "port_tls": 587},
+        "Yandex": {"server": "smtp.yandex.com", "port_ssl": 465, "port_tls": 587},
+        "ZohoMail": {"server": "smtp.zoho.com", "port_ssl": 465, "port_tls": 587},
+        "Proton": {"server": "smtp.protonmail.ch", "port_tls": 587
+    }
+},
+    "AI_MODELS": {
+        "ChatGPT": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.5-preview", "o3-mini", "gpt-4o", "gpt-4o-mini", "whisper-1"],
+        "Groq": ["distil-whisper-large-v3-en", "gemma2-9b-it", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-guard-3-8b", "llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "whisper-large-v3", "whisper-large-v3-turbo", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-llama-70b-specdec", "qwen-qwq-32b", "mistral-saba-24b", "qwen-2.5-coder-32b", "qwen-2.5-32b", "deepseek-r1-distill-llama-70b", "llama-3.3-70b-specdec"],
+        "Gemini": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro", "text-embedding-004"],
+        "Grok": ["grok-2-1212", "grok-2-vision-1212"],
+        "DeepSeek": ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"],
+        "Mistral": ["mistral-large-latest", "pixtral-large-latest", "mistral-moderation-latest", "ministral-3b-latest", "ministral-8b-latest", "open-mistral-nemo", "mistral-small-latest", "mistral-saba-latest", "codestral-latest", "mistral-ocr-latest"]
+    }
 }
-
-# Cấu hình Mô hình AI
-AI_MODELS = {
-    "ChatGPT": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.5-preview", "o3-mini", "gpt-4o", "gpt-4o-mini", "whisper-1"],
-    "Groq": ["distil-whisper-large-v3-en", "gemma2-9b-it", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-guard-3-8b", "llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "whisper-large-v3", "whisper-large-v3-turbo", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-llama-70b-specdec", "qwen-qwq-32b", "mistral-saba-24b", "qwen-2.5-coder-32b", "qwen-2.5-32b", "deepseek-r1-distill-llama-70b", "llama-3.3-70b-specdec"],
-    "Gemini": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro", "text-embedding-004"],
-    "Grok": ["grok-2-1212", "grok-2-vision-1212"],
-    "DeepSeek": ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"]
-}
+global SMTP_CONFIG, AI_MODELS  # Định nghĩa biến toàn cục
 
 # Hàm lấy token cho Gmail
 def get_gmail_token(client_id, client_secret, refresh_token):
@@ -97,31 +114,29 @@ class EmailSenderWorker(QObject):
     progress_signal = pyqtSignal(int)
     summary_signal = pyqtSignal(dict)
 
-    # def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None,
-                 # use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=1, max_delay=5):
-    def __init__(self, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None, cc=None, bcc=None, use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=None, max_delay=None):
+    def __init__(self, parent, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None, cc=None, bcc=None, use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=None, max_delay=None):
         super().__init__()
+        self.parent = parent  # Lưu widget cha
         self.smtp_server = smtp_server
         self.port = port
         self.sender_email = sender_email
         self.password = password
         self.subject = subject
-        self.body = body  # Mẫu nội dung cơ bản nếu không tích hợp AI
-        self.recipients = recipients
+        self.body = body
+        self.recipients = list(recipients)  # Tạo bản sao của danh sách recipients
         self.reply_to = reply_to
         self.cc = cc
         self.bcc = bcc
         self.connection_security = connection_security
-        self.use_oauth = use_oauth  # Thêm cờ để bật/tắt OAuth2
-        self.oauth_config = oauth_config  # Cấu hình OAuth2 (client_id, client_secret, token_url, ...)
-        self.refresh_token = refresh_token  # Refresh token cho OAuth2
+        self.use_oauth = use_oauth
+        self.oauth_config = oauth_config
+        self.refresh_token = refresh_token
         self.is_sending = False
         self.should_stop = False
-        # Các tham số AI:
         self.auto_integration = auto_integration
         self.ai_server = ai_server
         self.api_key = api_key
-        self.ai_prompt = ai_prompt  # Prompt cơ bản từ giao diện
+        self.ai_prompt = ai_prompt
         self.model = model
         self.min_delay = min_delay
         self.max_delay = max_delay
@@ -145,6 +160,45 @@ class EmailSenderWorker(QObject):
                     messages=[{"role": "user", "content": prompt}]
                 )
                 return response.choices[0].message.content
+            elif self.ai_server == "LM Studio":
+                if self.ai_server == "LM Studio":
+                    if hasattr(self.parent, 'local_ai_url_input'):
+                        url = self.parent.local_ai_url_input.text().strip().rstrip("/") + "/v1/chat/completions"
+                    else:
+                        url = "http://localhost:1234/v1/chat/completions"  # Giá trị mặc định nếu không có local_ai_url_input
+                headers = {"Content-Type": "application/json"}
+                data = {
+                    "model": self.model,
+                    "messages": [{"role": "system", "content": self.prompt}],
+                    "max_tokens": 4096  # Điều chỉnh theo nhu cầu
+                }
+                response = requests.post(url, headers=headers, json=data, timeout=300)
+                if response.status_code != 200:
+                    print(f"Lỗi từ server: {response.status_code} - {response.text}")
+                    error_msg = f"Lỗi từ server: {response.status_code} - {response.text}"
+                    self.error_signal.emit(error_msg) # Phát tín hiệu lỗi cho giao diện
+                    QThread.currentThread().quit()
+                    return self.body
+                response_data = response.json()
+                raw_content = response_data["choices"][0]["message"]["content"]
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                return cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
+            elif self.ai_server == "Ollama":
+                if hasattr(self.parent, 'local_ai_url_input'):
+                    base_url = self.parent.local_ai_url_input.text().strip().rstrip("/") + "/v1/"
+                else:
+                    base_url = "http://localhost:11434/v1/"  # Giá trị mặc định nếu không có local_ai_url_input
+                client = OpenAI(api_key='ollama', base_url=base_url)
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=False
+                )
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                return cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "Gemini":
                 genai.configure(api_key=self.api_key)
                 model_obj = genai.GenerativeModel(self.model)
@@ -164,7 +218,18 @@ class EmailSenderWorker(QObject):
                 client = OpenAI(api_key=self.api_key, base_url="https://api.deepseek.com")
                 response = client.chat.completions.create(
                     model=self.model,
-                    messages=[{"role": "user", "content": prompt}]
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=False
+                )
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                return cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
+            elif self.ai_server == "Mistral":
+                client = Mistral(api_key=self.api_key)
+                response = client.chat.complete(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
                 )
                 raw_content = response.choices[0].message.content
                 cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
@@ -174,8 +239,23 @@ class EmailSenderWorker(QObject):
                 return "Grok chưa có API công khai, hãy kiểm tra sau!"
             else:
                 return self.body  # Fallback
+        except requests.exceptions.Timeout:
+            self.error_signal.emit("❌ Hết thời gian chờ khi kết nối đến {ai_server}. Vui lòng kiểm tra máy chủ.")
+            return self.body
+        except requests.exceptions.ConnectionError:
+            self.error_signal.emit("❌ Không thể kết nối đến {ai_server}. Vui lòng kiểm tra URL và kết nối mạng.")
+            return self.body
+        except requests.exceptions.HTTPError as e:
+            self.error_signal.emit(f"❌ Lỗi HTTP từ {ai_server}: {str(e)}")
+            return self.body
+        except json.JSONDecodeError:
+            self.error_signal.emit("❌ Phản hồi từ {ai_server} không phải JSON hợp lệ.")
+            return self.body
+        except KeyError:
+            self.error_signal.emit("❌ Không tìm thấy key 'choices' trong phản hồi từ {ai_server}.")
+            return self.body
         except Exception as e:
-            # Nếu có lỗi khi gọi API, dùng mẫu nội dung gốc
+            self.error_signal.emit(f"❌ Lỗi không xác định: {str(e)}")
             return self.body
     
     def run(self):
@@ -234,12 +314,39 @@ class EmailSenderWorker(QObject):
 
             # Gửi email đến từng người nhận
             for idx, recipient in enumerate(self.recipients):
+                self.log_signal.emit(f"Đang gửi email thứ {idx+1}/{len(self.recipients)} đến {recipient}")
                 if self.should_stop:
                     self.error_signal.emit("⛔ Quá trình gửi email đã bị dừng.")
                     if hasattr(self, "server") and self.server:
                         self.server.quit()
                     return
                     
+                # Kiểm tra xem kết nối còn sống không
+                try:
+                    status = server.noop()[0]  # Trả về mã trạng thái, 250 là thành công
+                except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError):
+                    status = None
+                if status != 250:
+                    self.log_signal.emit(f"⚠️ Kết nối bị ngắt trước khi gửi email thứ {idx+1}, đang kết nối lại...")
+                    try:
+                        if self.connection_security == "SSL":
+                            server = smtplib.SMTP_SSL(self.smtp_server, self.port, context=context, timeout=30)
+                        elif self.connection_security == "TLS":
+                            server = smtplib.SMTP(self.smtp_server, self.port, timeout=30)
+                            server.ehlo()
+                            server.starttls(context=context)
+                            server.ehlo()
+                        else:
+                            server = smtplib.SMTP(self.smtp_server, self.port, timeout=30)
+                        if self.use_oauth:
+                            token = get_gmail_token(self.oauth_config["client_id"], self.oauth_config["client_secret"], self.refresh_token) if self.oauth_config.get("provider") == "gmail" else get_outlook_token(self.oauth_config["client_id"], self.oauth_config["client_secret"], self.refresh_token)
+                            server.login(self.sender_email, token)
+                        else:
+                            server.login(self.sender_email, self.password)
+                    except Exception as e:
+                        self.error_signal.emit(f"❌ Không thể kết nối lại server: {str(e)}")
+                        return
+
                 # Nếu auto_integration được bật, tạo nội dung mới cho mỗi email
                 if self.auto_integration:
                     unique_body = self.generate_unique_content(recipient)
@@ -294,7 +401,11 @@ class EmailSenderWorker(QObject):
                                     server.ehlo()
                                 else:
                                     server = smtplib.SMTP(self.smtp_server, self.port, timeout=30)
-                                server.login(self.sender_email, self.password)
+                                if self.use_oauth:
+                                    token = get_gmail_token(self.oauth_config["client_id"], self.oauth_config["client_secret"], self.refresh_token) if self.oauth_config.get("provider") == "gmail" else get_outlook_token(self.oauth_config["client_id"], self.oauth_config["client_secret"], self.refresh_token)
+                                    server.login(self.sender_email, token)
+                                else:
+                                    server.login(self.sender_email, self.password)
                             except Exception as reconnect_error:
                                 self.log_signal.emit(f"❌ Lỗi khi kết nối lại server: {str(reconnect_error)}")
                         else:
@@ -371,8 +482,9 @@ class ContentGeneratorWorker(QObject):
     result_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, ai_server, api_key, prompt, model):
+    def __init__(self, parent, ai_server, api_key, prompt, model):
         super().__init__()
+        self.parent = parent  # Lưu widget cha
         self.ai_server = ai_server
         self.api_key = api_key
         self.prompt = prompt
@@ -391,6 +503,40 @@ class ContentGeneratorWorker(QObject):
                     messages=[{"role": "user", "content": self.prompt}]
                 )
                 generated = response.choices[0].message.content
+            elif self.ai_server == "LM Studio":
+                if self.ai_server == "LM Studio":
+                    if hasattr(self.parent, 'local_ai_url_input'):
+                        url = self.parent.local_ai_url_input.text().strip() + "/v1/chat/completions"
+                    else:
+                        url = "http://localhost:1234/v1/chat/completions"  # Giá trị mặc định nếu không có local_ai_url_input
+                headers = {"Content-Type": "application/json"}
+                data = {
+                    "model": self.model,
+                    "messages": [{"role": "system", "content": self.prompt}],
+                    "max_tokens": 4096  # Điều chỉnh theo nhu cầu
+                }
+                response = requests.post(url, headers=headers, json=data, timeout=300)
+                if response.status_code != 200:
+                    print(f"Lỗi từ server: {response.status_code} - {response.text}")
+                    return
+                response_data = response.json()
+                generated = response_data["choices"][0]["message"]["content"]
+            elif self.ai_server == "Ollama":
+                if self.ai_server == "Ollama":
+                    if hasattr(self.parent, 'local_ai_url_input'):
+                        base_url = self.parent.local_ai_url_input.text().strip() + "/v1/"
+                    else:
+                        base_url = "http://localhost:11434/v1/"  # Giá trị mặc định nếu không có local_ai_url_input
+                client = OpenAI(api_key='ollama', base_url=base_url)
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": self.prompt}],
+                    stream=False
+                )
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                generated = cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "Gemini":
                 genai.configure(api_key=self.api_key)
                 model = genai.GenerativeModel(self.model)
@@ -409,6 +555,17 @@ class ContentGeneratorWorker(QObject):
             elif self.ai_server == "DeepSeek":
                 client = OpenAI(api_key=self.api_key, base_url="https://api.deepseek.com")
                 response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": self.prompt}],
+                    stream=False
+                )
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                generated = cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
+            elif self.ai_server == "Mistral":
+                client = Mistral(api_key=self.api_key)
+                response = client.chat.complete(
                     model=self.model,
                     messages=[{"role": "user", "content": self.prompt}]
                 )
@@ -439,10 +596,21 @@ class ContentGeneratorWorker(QObject):
                 return
             
             self.result_signal.emit(generated)
+            
+        except requests.exceptions.Timeout:
+            self.error_signal.emit("❌ Hết thời gian chờ khi kết nối đến {self.ai_server}. Vui lòng kiểm tra máy chủ.")
+        except requests.exceptions.ConnectionError:
+            self.error_signal.emit("❌ Không thể kết nối đến {self.ai_server}. Vui lòng kiểm tra URL và kết nối mạng.")
+        except requests.exceptions.HTTPError as e:
+            self.error_signal.emit(f"❌ Lỗi HTTP từ {self.ai_server}: {str(e)}")
+        except json.JSONDecodeError:
+            self.error_signal.emit("❌ Phản hồi từ {self.ai_server} không phải JSON hợp lệ.")
+        except KeyError:
+            self.error_signal.emit("❌ Không tìm thấy key 'choices' trong phản hồi từ {self.ai_server}.")
         except Exception as e:
-            self.error_signal.emit(f"Lỗi khi gọi AI: {str(e)}")
+            self.error_signal.emit(f"❌ Lỗi không xác định: {str(e)}")
         finally:
-            QThread.currentThread().quit()  # Thêm dòng này để đảm bảo thread dừng an toàn
+            QThread.currentThread().quit()  # Đảm bảo luồng dừng an toàn
             
     def is_valid_html(self, html):
         """Kiểm tra xem chuỗi có phải là HTML hợp lệ không"""
@@ -465,12 +633,19 @@ class BulkEmailSender(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window)
+        self.SMTP_CONFIG = DEFAULT_SETTINGS["SMTP_CONFIG"]
+        self.AI_MODELS = DEFAULT_SETTINGS["AI_MODELS"]
+        self.lm_url = "http://localhost:1234"
+        self.ollama_url = "http://localhost:11434"
         self.initUI()
         self.load_settings()
         self.is_sending = False
         self.is_gathering = False
         self.extracted_emails = set()
         self.recipients_sent = []  # Danh sách email đã gửi thành công
+        self._save_timer = QTimer(self)  # Khởi tạo timer với parent là self
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self.save_settings)
         # Gọi delayed_save_settings() mỗi khi người dùng nhập dữ liệu
         self.email_input.textChanged.connect(self.delayed_save_settings)
         self.password_input.textChanged.connect(self.delayed_save_settings)
@@ -486,6 +661,7 @@ class BulkEmailSender(QWidget):
         self.min_delay_input.textChanged.connect(self.delayed_save_settings)
         self.max_delay_input.textChanged.connect(self.delayed_save_settings)
         self.ai_server_combo.currentIndexChanged.connect(self.delayed_save_settings)
+        self.ai_server_combo.currentIndexChanged.connect(self.update_model_combo)
         self.oauth_checkbox.stateChanged.connect(self.delayed_save_settings)
         self.client_id_input.textChanged.connect(self.delayed_save_settings)
         self.client_secret_input.textChanged.connect(self.delayed_save_settings)
@@ -499,6 +675,7 @@ class BulkEmailSender(QWidget):
         self.url_input.textChanged.connect(self.delayed_save_settings)
         self.sitemap_checkbox.stateChanged.connect(self.delayed_save_settings)
         self.thread_count_input.textChanged.connect(self.delayed_save_settings)
+        self.local_ai_url_input.textChanged.connect(self.delayed_save_settings)
 
     def initUI(self):
         self.tabs = QTabWidget()
@@ -568,7 +745,7 @@ class BulkEmailSender(QWidget):
         self.provider_label = QLabel("Máy chủ SMTP:")
         row3.addWidget(self.provider_label)
         self.provider_combo = QComboBox()
-        self.provider_combo.addItems(list(SMTP_CONFIG.keys()) + ["Khác"])
+        self.provider_combo.addItems(list(self.SMTP_CONFIG.keys()) + ["Khác"])
         self.provider_combo.currentIndexChanged.connect(self.provider_changed)
         row3.addWidget(self.provider_combo)
         self.custom_smtp_label = QLabel("SMTP tuỳ chỉnh:")
@@ -682,7 +859,8 @@ class BulkEmailSender(QWidget):
         self.ai_server_label = QLabel("Máy chủ AI:")
         row_ai.addWidget(self.ai_server_label)
         self.ai_server_combo = QComboBox()
-        self.ai_server_combo.addItems(["Groq", "ChatGPT", "Gemini", "Grok", "DeepSeek"])
+        # self.ai_server_combo.addItems(list(self.AI_MODELS.keys()))
+        self.ai_server_combo.addItems(list(self.AI_MODELS.keys()) + ["LM Studio","Ollama"])
         row_ai.addWidget(self.ai_server_combo)
         self.ai_server_combo.currentIndexChanged.connect(self.update_model_combo)
         gen_layout.addLayout(row_ai)
@@ -698,6 +876,15 @@ class BulkEmailSender(QWidget):
         gen_layout.addWidget(self.model_label)
         self.model_combo = QComboBox()  # Combobox để chọn model
         gen_layout.addWidget(self.model_combo)
+        
+       # Trong phần Tab GENERATE
+        self.local_ai_url_label = QLabel("Đường dẫn Local AI:")
+        gen_layout.addWidget(self.local_ai_url_label)
+        self.local_ai_url_input = QLineEdit()
+        self.local_ai_url_input.setVisible(False)  # Ẩn ô nhập ban đầu
+        gen_layout.addWidget(self.local_ai_url_input)
+        # Kết nối sự kiện thay đổi của ai_server_combo
+        self.ai_server_combo.currentIndexChanged.connect(self.toggle_local_ai_url_input)
 
         self.prompt_label = QLabel("Nhập yêu cầu cho AI:")
         gen_layout.addWidget(self.prompt_label)
@@ -738,9 +925,9 @@ class BulkEmailSender(QWidget):
         about_info = {
             "Tác giả": "TekDT",
             "Phần mềm": "AI Bulk Mailer",
-            "Phiên bản": "1.2.0",
-            "Ngày phát hành": "19/03/2025",
-            "Mô tả": "Phần mềm gửi email hàng loạt với khả năng hỗ trợ đa luồng, tạo nội dung tự động bằng nhiều mô hình AI và thu thập tất cả email trên một trang web."
+            "Phiên bản": "1.3.0",
+            "Ngày phát hành": "26/03/2025",
+            "Mô tả": "Phần mềm gửi email hàng loạt với khả năng hỗ trợ đa luồng, tạo nội dung tự động bằng nhiều mô hình AI và thu thập tất cả email trên một trang web, hỗ trợ thu thập mail trên nhóm facebook."
         }
         for key, value in about_info.items():
             lbl = QLabel(f"<b>{key}:</b> {value}")
@@ -771,6 +958,18 @@ class BulkEmailSender(QWidget):
         self.refresh_token_label.setVisible(visible)
         self.refresh_token_input.setVisible(visible)
     
+    def toggle_local_ai_url_input(self):
+        if self.ai_server_combo.currentText() == "LM Studio" or self.ai_server_combo.currentText() == "Ollama":
+            self.local_ai_url_input.setVisible(True)
+            self.local_ai_url_label.setVisible(True)
+            if not self.local_ai_url_input.text().strip():
+                # Nếu rỗng, tự điền giá trị mặc định
+                default_url = self.lm_url_default if self.ai_server_combo.currentText() == "LM Studio" else self.ollama_url_default
+                self.local_ai_url_input.setText(default_url)
+        else:
+            self.local_ai_url_input.setVisible(False)
+            self.local_ai_url_label.setVisible(False)
+    
     def stop_sending(self):
         if self.is_sending and self.worker:
             self.worker.stop()  # Dừng worker trước
@@ -787,8 +986,26 @@ class BulkEmailSender(QWidget):
 
         # Ô nhập link trang web
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Nhập link trang web")
+        self.url_input.textChanged.connect(self.update_scroll_input_visibility)
+        self.url_input.setPlaceholderText("Nhập link trang web hoặc Facebook")
         layout.addWidget(self.url_input)
+        
+        # Ô nhập XPath
+        self.xpath_label = QLabel("XPath (cho nút Xem thêm/Trang tiếp theo):")
+        layout.addWidget(self.xpath_label)
+        self.xpath_input = QLineEdit()
+        self.xpath_input.setPlaceholderText("Ví dụ: //a[contains(text(), 'Xem thêm')]")
+        layout.addWidget(self.xpath_input)
+
+        # Trong hàm setup_gather_tab
+        self.scroll_times_label = QLabel("Số lần cuộn trang (Facebook):")
+        self.scroll_times_input = QLineEdit()
+        self.scroll_times_input.setText("50")  # Giá trị mặc định là 50
+        self.scroll_times_input.setValidator(QIntValidator(1, 1000))  # Giới hạn giá trị từ 1 đến 1000
+        self.scroll_times_label.setVisible(False)  # Ẩn ban đầu
+        self.scroll_times_input.setVisible(False)  # Ẩn ban đầu
+        layout.addWidget(self.scroll_times_label)
+        layout.addWidget(self.scroll_times_input)
 
         # Ô tick "Dựa trên SiteMap"
         self.sitemap_checkbox = QCheckBox("Dựa trên SiteMap")
@@ -831,11 +1048,17 @@ class BulkEmailSender(QWidget):
         self.tabs.addTab(self.gather_tab, "THU THẬP EMAIL")
 
     def gather_emails(self):
-        url = self.url_input.text().strip()
-        if not url:
-            self.output_area.setText("⚠️ Vui lòng nhập link trang web.")
+        raw_url = self.url_input.text().strip()
+        if not raw_url:
+            self.output_area.setText("⚠️ Vui lòng nhập link trang web hoặc Facebook.")
             return
 
+        # Chuẩn hóa URL
+        url = self.normalize_url(raw_url)
+        if not url:
+            self.output_area.setText("⚠️ URL không hợp lệ. Vui lòng kiểm tra lại.")
+            return
+        
         try:
             max_workers = int(self.thread_count_input.text().strip())
             if max_workers <= 0:
@@ -844,6 +1067,14 @@ class BulkEmailSender(QWidget):
             self.output_area.setText("⚠️ Số luồng không hợp lệ. Vui lòng nhập số nguyên dương.")
             return
 
+        xpath = self.xpath_input.text().strip()  # Lấy XPath từ ô nhập
+        
+        # Tự động vô hiệu hóa sitemap nếu là link Facebook
+        is_facebook = self.is_facebook_url(url)
+        if is_facebook and self.sitemap_checkbox.isChecked():
+            self.sitemap_checkbox.setChecked(False)
+            self.gather_status_label.setText("⚠️ Sitemap không hỗ trợ cho Facebook, đã bỏ chọn.")
+        
         # Đặt cờ bắt đầu thu thập
         self.is_gathering = True
 
@@ -857,22 +1088,37 @@ class BulkEmailSender(QWidget):
         self.export_button.setEnabled(False)
 
         self.thread = QThread()
-        self.worker = GatherEmailsWorker(self, url, self.sitemap_checkbox.isChecked(), max_workers)
+        try:
+            scroll_times = int(self.scroll_times_input.text().strip()) if self.is_facebook_url(url) else 0
+        except ValueError:
+            scroll_times = 50  # Nếu nhập sai, dùng giá trị mặc định 50
+        self.worker = GatherEmailsWorker(self, url, self.sitemap_checkbox.isChecked(), max_workers, xpath, scroll_times)
         self.worker.moveToThread(self.thread)
 
         # Kết nối tín hiệu
         self.thread.started.connect(self.worker.run)
         self.worker.status_update.connect(lambda msg: self.gather_status_label.setText(msg))
         self.worker.finished.connect(self.on_gather_finished)
+        self.worker.content_signal.connect(self.on_content_gathered)  # Kết nối tín hiệu nội dung
         self.worker.finished.connect(self.cleanup_thread)
 
         self.thread.start()
 
+    # Hàm kiểm tra và cập nhật trạng thái hiển thị
+    def update_scroll_input_visibility(self):
+        url = self.url_input.text().strip()
+        is_facebook = self.is_facebook_url(url)  # Hàm kiểm tra URL
+        self.scroll_times_label.setVisible(is_facebook)
+        self.scroll_times_input.setVisible(is_facebook)
+    
+    def on_content_gathered(self, content):
+        """Hiển thị nội dung thu thập được từ Facebook."""
+        self.output_area.setText(content if content else "⚠️ Không tìm thấy nội dung.")
+    
     def on_gather_finished(self, emails):
         """Xử lý khi quá trình thu thập email hoàn tất"""
         self.extracted_emails = emails
         self.output_area.setText("\n".join(emails) if emails else "️⚠️ Không tìm thấy email nào.")
-        # self.gather_status_label.setText(f"✅ Hoàn tất! Thu thập {len(emails)} email.")
         self.gather_button.setEnabled(True)
         self.stop_gathering_button.setEnabled(False)
         self.export_button.setEnabled(bool(emails))
@@ -888,6 +1134,8 @@ class BulkEmailSender(QWidget):
             self.display_emails()
             self.gather_status_label.setText(f"✅ Hoàn thành! Tìm thấy {len(self.extracted_emails)} email.")
         else:
+            self.display_emails()
+            self.gather_status_label.setText(f"✅ Hoàn thành! Tìm thấy {len(self.extracted_emails)} email.")
             self.output_area.setText("⛔ Quá trình thu thập đã bị dừng.")
             self.gather_status_label.setText("⛔ Quá trình bị dừng.")
         self.reset_gather_buttons()
@@ -927,6 +1175,12 @@ class BulkEmailSender(QWidget):
             self.thread.wait()
 
         self.gather_status_label.setText("⛔ Quá trình thu thập đã bị dừng.")
+        # ✅ Vẫn giữ lại email đã thu thập
+        if self.extracted_emails:
+            self.output_area.setText("\n".join(self.extracted_emails))  # Hiển thị danh sách email
+            self.export_button.setEnabled(True)  # Cho phép xuất CSV
+        else:
+            self.output_area.setText("⚠️ Không tìm thấy email nào.")
         # Cập nhật UI đúng cách
         self.gather_button.setEnabled(True)
         self.stop_gathering_button.setEnabled(False)
@@ -952,17 +1206,43 @@ class BulkEmailSender(QWidget):
         except Exception as e:
             return None
 
+    def normalize_url(self, url):
+        """Chuẩn hóa URL: bổ sung giao thức nếu thiếu và trả về dạng hợp lệ."""
+        url = url.strip()
+        if not url:
+            return None
+        
+        # Bổ sung giao thức nếu thiếu
+        if not (url.startswith('http://') or url.startswith('https://')):
+            url = 'https://' + url
+        
+        # Phân tích và chuẩn hóa URL
+        try:
+            parsed = urlparse(url)
+            if not parsed.netloc:  # Nếu không có domain (netloc rỗng)
+                return None
+            # Tạo lại URL chuẩn với scheme và netloc
+            normalized = parsed._replace(scheme='https' if parsed.scheme == '' else parsed.scheme).geturl()
+            return normalized
+        except Exception:
+            return None
+
+    def is_facebook_url(self, url):
+        """Kiểm tra xem URL có phải là của Facebook không."""
+        return 'facebook.com' in url.lower()
+    
     def parse_sitemap(self, sitemap_url):
         """Phân tích sitemap và trả về danh sách các URL, bao gồm sitemap con."""
         urls = []
         try:
             response = requests.get(sitemap_url, timeout=10)
             if response.status_code != 200:
-                # self.output_area.setText(f"❌ Không thể tải sitemap: {response.status_code}")
                 return []
 
-            # self.status_label.setText("♾️ Đang trích xuất tất cả liên kết bên trong sitemap")
             content = response.content.decode('utf-8', errors='ignore')
+            # Loại bỏ khai báo XML nếu có
+            if content.startswith("<?xml"):
+                content = re.sub(r'^<\?xml.*?\?>', '', content)
             root = ET.fromstring(content)
             namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
 
@@ -985,7 +1265,7 @@ class BulkEmailSender(QWidget):
         try:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
-            return response.text, None
+            return response.content, None
         except requests.exceptions.RequestException as e:
             return None, str(e)
         
@@ -1029,16 +1309,53 @@ class BulkEmailSender(QWidget):
     # Hàm cập nhật danh sách model
     def update_model_combo(self):
         ai_server = self.ai_server_combo.currentText()  # Lấy AI được chọn
-        models = AI_MODELS.get(ai_server, [])  # Lấy danh sách model tương ứng
-        self.model_combo.clear()  # Xóa danh sách model cũ
-        self.model_combo.addItems(models)  # Thêm danh sách model mới
+        if ai_server == "LM Studio" or ai_server == "Ollama" :
+            # Sử dụng self.local_ai_url làm giá trị cơ sở
+            local_ai_url = self.local_ai_url
+            # Nếu người dùng đã nhập URL mới trong local_ai_url_input, ưu tiên giá trị đó
+            input_url = self.local_ai_url_input.text().strip()
+            if input_url:
+                local_ai_url = input_url
+            
+            try:
+                # Gửi yêu cầu đến API /v1/models
+                response = requests.get(f"{local_ai_url}/v1/models")
+                if response.status_code == 200:
+                    models = response.json().get("data", [])  # Lấy danh sách mô hình
+                    if models:
+                        # Điền danh sách mô hình vào model_combo
+                        model_names = [model["id"] for model in models]
+                        self.model_combo.clear()
+                        self.model_combo.addItems(model_names)
+                    else:
+                        # Thông báo nếu không có mô hình
+                        QMessageBox.warning(self, "Không có mô hình", 
+                                            "Không có mô hình nào được tải trong {ai_server}. Vui lòng tải mô hình.")
+                else:
+                    # Thông báo nếu không kết nối được
+                    QMessageBox.warning(self, "Lỗi kết nối", 
+                                        f"Không thể kết nối đến {ai_server}: {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                # Thông báo nếu không ping được localhost hoặc URL
+                QMessageBox.warning(self, "Lỗi kết nối", 
+                                    f"Không thể kết nối đến {ai_server}. Vui lòng bật kết nối trong {ai_server}: {e}")
+            except ValueError:
+                # Thông báo nếu phản hồi không phải JSON hợp lệ
+                QMessageBox.warning(self, "Lỗi định dạng", 
+                                    "Phản hồi từ {ai_server} không phải là JSON hợp lệ.")
+        else:
+            # Xử lý cho các máy chủ AI khác
+            models = self.AI_MODELS.get(ai_server, [])  # Lấy danh sách model tương ứng
+            self.model_combo.clear()  # Xóa danh sách model cũ
+            self.model_combo.addItems(models)  # Thêm danh sách model mới
+            pass
 
     def update_smtp_provider(self):
         """Tự động chọn SMTP dựa trên tên miền email."""
         email = self.email_input.text().strip()
         if '@' in email:
             domain = email.split('@')[1].lower()
-            for provider, config in SMTP_CONFIG.items():
+            for provider, config in self.SMTP_CONFIG.items():
                 if domain in config['server']:
                     self.provider_combo.setCurrentText(provider)
                     return
@@ -1169,7 +1486,7 @@ class BulkEmailSender(QWidget):
                 self.log_output.append("❌ Máy chủ SMTP bị thiếu.")
                 return
         else:
-            config = SMTP_CONFIG.get(provider)
+            config = self.SMTP_CONFIG.get(provider)
             smtp_server = config['server']
             # Chọn cổng dựa trên kiểu bảo mật
             if connection_security == "SSL":
@@ -1252,9 +1569,11 @@ class BulkEmailSender(QWidget):
         self.progress_bar.setValue(0)
         self.log_output.clear()
         self.status_label.setText("♾️ Đang gửi mail...")
+        # Lưu tổng số mail ban đầu
+        self.total_recipients = len(self.recipients)
 
         self.thread = QThread()
-        self.worker = EmailSenderWorker(smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, cc=cc, bcc=bcc, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model, min_delay=min_delay, max_delay=max_delay)
+        self.worker = EmailSenderWorker(self, smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, cc=cc, bcc=bcc, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model, min_delay=min_delay, max_delay=max_delay)
         self.worker.success_signal.connect(self.on_email_sent_successfully)
         self.worker.moveToThread(self.thread)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
@@ -1277,8 +1596,8 @@ class BulkEmailSender(QWidget):
             self.recipients_sent.append(email)  # Thêm email vào danh sách đã gửi
             
         current_sent = len(self.recipients_sent)
-        total = current_sent + len(self.recipients)
-        self.status_label.setText(f"✅ Đã gửi đến {email} ({current_sent}/{total})")
+        total = len(self.recipients)
+        self.status_label.setText(f"✅ Đã gửi đến {email} ({current_sent}/{self.total_recipients})")
         self.save_settings()           # Lưu ngay vào settings.json
         # Cập nhật thanh tiến trình
         self.progress_bar.setValue(current_sent)
@@ -1340,7 +1659,7 @@ class BulkEmailSender(QWidget):
         self.apply_button.setEnabled(False)
         # Tạo luồng mới
         self.gen_thread = QThread()
-        self.gen_worker = ContentGeneratorWorker(ai_server, api_key, prompt, model)
+        self.gen_worker = ContentGeneratorWorker(self, ai_server, api_key, prompt, model)
         self.gen_worker.moveToThread(self.gen_thread)
         # Kết nối tín hiệu
         self.gen_worker.result_signal.connect(self.on_gen_result)
@@ -1395,13 +1714,41 @@ class BulkEmailSender(QWidget):
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     settings = json.load(f)
+                    
+                # Tải SMTP_CONFIG
+                self.SMTP_CONFIG = settings.get("SMTP_CONFIG", DEFAULT_SETTINGS["SMTP_CONFIG"])
+                self.AI_MODELS = settings.get("AI_MODELS", DEFAULT_SETTINGS["AI_MODELS"])
+                self.lm_url_default = settings.get("lm_url_default", DEFAULT_SETTINGS["lm_url_default"])
+                self.ollama_url_default = settings.get("ollama_url_default", DEFAULT_SETTINGS["ollama_url_default"])
+                # Nếu có key nào chưa tồn tại, cập nhật settings để lưu sau
+                update_needed = False
+                if "SMTP_CONFIG" not in settings:
+                    settings["SMTP_CONFIG"] = self.SMTP_CONFIG
+                    update_needed = True
+                if "AI_MODELS" not in settings:
+                    settings["AI_MODELS"] = self.AI_MODELS
+                    update_needed = True
+                if "lm_url_default" not in settings:
+                    settings["lm_url_default"] = "http://localhost:1234"
+                    update_needed = True
+                if "ollama_url_default" not in settings:
+                    settings["ollama_url_default"] = "http://localhost:11434"
+                    update_needed = True
+                # Lưu lại file nếu có thay đổi
+                if update_needed:
+                    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                        json.dump(settings, f, ensure_ascii=False, indent=4)
+   
+                if "local_ai_url" in settings:
+                    self.local_ai_url = settings["local_ai_url"]
                 self.email_input.setText(settings.get("email", ""))
                 self.password_input.setText(settings.get("password", ""))
                 self.subject_input.setText(settings.get("subject", ""))
                 self.reply_input.setText(settings.get("reply_to", ""))
                 self.cc_input.setText(settings.get("cc_input", ""))
                 self.bcc_input.setText(settings.get("bcc_input", ""))
-                self.provider_combo.setCurrentIndex(settings.get("smtp_provider_index", 0))
+                # self.provider_combo.setCurrentIndex(settings.get("smtp_provider_index", 0))
+                self.provider_combo.setCurrentText(settings.get("smtp_provider", ""))
                 self.custom_smtp_input.setText(settings.get("custom_smtp", ""))
                 self.custom_port_input.setText(str(settings.get("custom_port", "")))
                 self.rich_editor.setHtml(settings.get("email_body", ""))
@@ -1418,15 +1765,23 @@ class BulkEmailSender(QWidget):
                 self.security_combo.setCurrentText(settings.get("connection_security", "SSL"))
                 self.check_email_checkbox.setChecked(settings.get("check_email", False))
                 self.url_input.setText(settings.get("gather_url", ""))
+                self.xpath_input.setText(settings.get("xpath", ""))
                 self.sitemap_checkbox.setChecked(settings.get("sitemap", False))
                 self.thread_count_input.setText(settings.get("thread_count", "5"))
                 # Load settings từ file hoặc cấu hình
                 ai_server = settings.get("ai_server", "ChatGPT")
                 model = settings.get("model", "")
-                self.ai_server_combo.setCurrentText(ai_server)
                 self.update_model_combo()  # Cập nhật danh sách model
-                if model in AI_MODELS.get(ai_server, []):
+                self.ai_server_combo.setCurrentText(settings.get("ai_server", ""))
+                self.AI_MODELS = settings.get("AI_MODELS", self.AI_MODELS)
+                if model in self.AI_MODELS.get(ai_server, []):
                     self.model_combo.setCurrentText(model)  # Đặt model đã lưu
+                if ai_server == "LM Studio":
+                    self.local_ai_url = settings.get("local_ai_url") or settings.get("lm_url_default", "http://localhost:1234")
+                elif ai_server == "Ollama":
+                    self.local_ai_url = settings.get("local_ai_url") or settings.get("ollama_url_default", "http://localhost:11434")
+                self.local_ai_url_input.setText(self.local_ai_url)
+                self.toggle_local_ai_url_input()  # Gọi để cập nhật trạng thái hiển thị
                 self.oauth_checkbox.setChecked(settings.get("use_oauth", False))
                 self.client_id_input.setText(settings.get("client_id", ""))
                 self.client_secret_input.setText(settings.get("client_secret", ""))
@@ -1435,19 +1790,50 @@ class BulkEmailSender(QWidget):
             except Exception as e:
                 if hasattr(self, 'status_label'):
                     self.status_label.setText(f"❌ Lỗi khi tải các thiết lập: {e}")
-
+                    print(f"❌ Lỗi khi tải các thiết lập: {e}")
+                    # Nếu lỗi, sử dụng giá trị mặc định
+                    self.local_ai_url = "http://localhost:1234"
+                    self.SMTP_CONFIG = DEFAULT_SETTINGS["SMTP_CONFIG"]
+                    self.AI_MODELS = DEFAULT_SETTINGS["AI_MODELS"]
+        else:
+            # Nếu file không tồn tại, dùng giá trị mặc định và tạo file mới
+            self.local_ai_url = "http://localhost:1234"
+            self.SMTP_CONFIG = DEFAULT_SETTINGS["SMTP_CONFIG"]
+            self.AI_MODELS = DEFAULT_SETTINGS["AI_MODELS"]
+            settings = {
+                "SMTP_CONFIG": self.SMTP_CONFIG,
+                "AI_MODELS": self.AI_MODELS,
+                "lm_url_default": "http://localhost:1234",
+                "ollama_url_default": "http://localhost:11434"
+            }
+            try:
+                with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                    json.dump(settings, f, ensure_ascii=False, indent=4)
+            except Exception as e:
+                print(f"❌ Lỗi khi tạo file settings: {e}")
+                    
     def save_settings(self):
         if self.tab_widget.currentIndex() == 1:
             self.rich_editor.setHtml(self.raw_editor.toPlainText())
-        
+        # Đọc dữ liệu hiện tại từ file settings.json để không ghi đè mất cookie
+        current_settings = {}
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    current_settings = json.load(f)
+            except Exception as e:
+                print(f"❌ Lỗi khi đọc file settings hiện tại: {e}")
         settings = {
+            "SMTP_CONFIG": self.SMTP_CONFIG,
+            "AI_MODELS": self.AI_MODELS,
             "email": self.email_input.text(),
             "password": self.password_input.text(),
             "subject": self.subject_input.text(),
             "reply_to": self.reply_input.text(),
             "cc_input": self.cc_input.text(),
             "bcc_input": self.bcc_input.text(),
-            "smtp_provider_index": self.provider_combo.currentIndex(),
+            # "smtp_provider_index": self.provider_combo.currentIndex(),
+            "smtp_provider": self.provider_combo.currentText(),
             "custom_smtp": self.custom_smtp_input.text(),
             "custom_port": self.custom_port_input.text(),
             "email_body": self.rich_editor.toHtml(),
@@ -1459,9 +1845,11 @@ class BulkEmailSender(QWidget):
             "recipients": self.recipients,
             "ai_server": self.ai_server_combo.currentText(),
             "model": self.model_combo.currentText(),
+            "local_ai_url": self.local_ai_url_input.text(),
             "connection_security": self.security_combo.currentText(),
             "check_email": self.check_email_checkbox.isChecked(),
             "gather_url": self.url_input.text(),
+            "xpath": self.xpath_input.text(),
             "sitemap": self.sitemap_checkbox.isChecked(),
             "thread_count": self.thread_count_input.text(),
             "use_oauth": self.oauth_checkbox.isChecked(),
@@ -1471,6 +1859,9 @@ class BulkEmailSender(QWidget):
             "min_delay": self.min_delay_input.text(),
             "max_delay": self.max_delay_input.text(),
         }
+        # Giữ lại facebook_cookies từ settings hiện tại nếu có
+        if "facebook_cookies" in current_settings:
+            settings["facebook_cookies"] = current_settings["facebook_cookies"]
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(settings, f, ensure_ascii=False, indent=4)
@@ -1502,22 +1893,330 @@ class BulkEmailSender(QWidget):
                     self.gen_thread.wait()
                     self.gen_thread.deleteLater()
                     self.gen_thread = None
-                event.accept()
+            event.accept()
         except RuntimeError:
             pass
 
 class GatherEmailsWorker(QObject):
     finished = pyqtSignal(set)  # Tín hiệu hoàn tất thu thập
+    content_signal = pyqtSignal(str)  # Tín hiệu trả về nội dung văn bản từ Facebook
     status_update = pyqtSignal(str)  # Tín hiệu cập nhật trạng thái
 
-    def __init__(self, main_window, url, use_sitemap, max_workers):
+    def __init__(self, main_window, url, use_sitemap, max_workers, xpath, scroll_times=50):
         super().__init__()
         self.main_window = main_window  # Truy cập hàm từ BulkEmailSender
         self.url = url
         self.use_sitemap = use_sitemap
         self.max_workers = max_workers
+        self.xpath = xpath
         self.is_running = True
         self.emails = set()
+        self.content = ""
+        self.session = None
+        self.driver = None
+        self.scroll_times = scroll_times
+        
+    def convert_to_mbasic(self, url):
+        """Chuyển URL Facebook sang phiên bản mbasic."""
+        if self.main_window.is_facebook_url(url):  # Gọi từ main_window
+            parsed_url = urlparse(url)
+            return f"https://m.facebook.com{parsed_url.path}{parsed_url.query}"
+        return url
+    
+    def setup_selenium_driver(self):
+        """Cấu hình Selenium với Chrome, tắt JavaScript và tối ưu hóa."""
+        chrome_options = Options()
+        
+        # Tắt JavaScript
+        chrome_options.add_argument('--disable-javascript')
+        
+        # Tắt hình ảnh để tăng tốc độ
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,  # 2 = tắt hình ảnh
+            "profile.managed_default_content_settings.stylesheets": 2,  # Tắt CSS nếu cần
+        }
+        chrome_options.add_experimental_option("prefs", prefs)
+        
+        # Chạy ở chế độ headless (không hiển thị giao diện) nếu không cần nhập 2FA thủ công
+        chrome_options.add_argument('--headless')  # Bỏ comment nếu muốn chạy ẩn
+        
+        # Giả lập User-Agent đơn giản cho mbasic
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Mobile Safari/537.36')
+        
+        driver = webdriver.Chrome(options=chrome_options)
+        return driver
+        
+    def is_logged_in(self):
+        """Kiểm tra trạng thái đăng nhập bằng requests dựa trên cookie trong session."""
+        if not self.session:
+            self.status_update.emit("⚠️ Chưa có session để kiểm tra đăng nhập.")
+            return False
+
+        try:
+            response = self.session.get('https://m.facebook.com')
+            if response.status_code == 200 and 'data-mcomponent="ServerImageArea"' in response.text:
+                self.status_update.emit("✅ Đã đăng nhập từ trước!")
+                return True
+            else:
+                self.status_update.emit("⚠️ Chưa đăng nhập hoặc cookie hết hạn.")
+                return False
+        except Exception as e:
+            self.status_update.emit(f"❌ Lỗi khi kiểm tra đăng nhập: {e}")
+            return False
+            
+    def load_cookies_from_settings(self):
+        """Tải cookie từ settings.json và thêm vào Selenium driver."""
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+                    saved_cookies = settings.get("facebook_cookies", None)
+                    if saved_cookies:
+                        if self.driver is None:  # Chỉ tạo driver nếu chưa tồn tại
+                            self.driver = self.setup_selenium_driver()
+                        self.driver.get('https://m.facebook.com')  # Tải trang trước khi thêm cookie
+                        self.driver.delete_all_cookies()  # Xóa cookie cũ (nếu có)
+                        for cookie in saved_cookies:
+                            self.driver.add_cookie(cookie)
+                        self.driver.refresh()  # Tải lại trang để áp dụng cookie
+                        self.status_update.emit("✅ Đã tải cookie và refresh trang!")
+                        return True
+            except Exception as e:
+                self.status_update.emit(f"❌ Lỗi khi tải cookie từ settings: {e}")
+        return False
+        
+    def save_cookies_to_settings(self, cookies):
+        """Lưu cookie vào settings.json."""
+        try:
+            if os.path.exists(SETTINGS_FILE):
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+            else:
+                settings = {}
+
+            settings["facebook_cookies"] = cookies
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(settings, f, ensure_ascii=False, indent=4)
+            self.status_update.emit("✅ Đã lưu cookie vào settings!")
+        except Exception as e:
+            self.status_update.emit(f"❌ Lỗi khi lưu cookie vào settings: {e}")
+    
+    def check_facebook_login(self):
+        """
+        Kiểm tra xem đã đăng nhập vào Facebook thành công chưa bằng cách chọn ngẫu nhiên một phương pháp kiểm tra.
+        """
+        methods = [
+            lambda: self.driver.refresh(),  # 1. Làm mới trang
+            lambda: self.driver.execute_script("window.scrollBy(0, 200); time.sleep(1); window.scrollBy(0, -200);"),  # 2. Cuộn trang
+            lambda: self.driver.execute_script("location.reload(true);"),  # 3. Buộc tải lại trang bằng JavaScript
+            lambda: WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.XPATH, "//a[contains(@href, 'logout')]"))),  # 4. Kiểm tra phần tử đăng xuất
+            lambda: self.driver.find_element(By.XPATH, "//a[@href='https://m.facebook.com/']").click() if self.driver.find_elements(By.XPATH, "//a[@href='https://m.facebook.com/']") else None,  # 5. Nhấn vào logo
+            lambda: self.driver.execute_script("sessionStorage.clear(); localStorage.clear(); location.reload();"),  # 6. Xóa sessionStorage & localStorage
+        ]
+
+        # Chọn ngẫu nhiên một phương pháp kiểm tra
+        method = random.choice(methods)
+        
+        try:
+            print(f"🔄 Đang kiểm tra trạng thái đăng nhập bằng phương pháp: {method.__name__}")
+            result = method()
+            time.sleep(2)  # Chờ một chút để trang cập nhật
+            
+            # Kiểm tra trạng thái đăng nhập theo phương pháp 7
+            if isinstance(result, bool):
+                return result
+            
+            return True  # Nếu không gặp lỗi, giả định là đã đăng nhập
+        except Exception as e:
+            print(f"⚠️ Lỗi khi kiểm tra đăng nhập: {e}")
+            return False
+    
+    def login_facebook_selenium(self):
+        if not hasattr(self, 'driver') or self.driver is None:
+            self.driver = self.setup_selenium_driver()
+        # Tải cookie từ settings trước
+        self.load_cookies_from_settings()
+        self.check_facebook_login()
+        
+        # Kiểm tra xem đã đăng nhập chưa
+        if self.is_logged_in():
+            return
+
+        self.status_update.emit("⌛ Vui lòng đăng nhập vào Facebook trong trình duyệt...")
+
+        try:
+            # Chờ element đặc trưng xuất hiện (đăng nhập thành công)
+            # Sử dụng thuộc tính aria-label="Đi tới trang cá nhân" để xác định
+            WebDriverWait(self.driver, 300).until(
+                EC.presence_of_element_located((By.XPATH, '//div[@role=\'button\' and @data-focusable=\'true\' and @data-client-focused-component=\'true\']'))
+            )
+            self.status_update.emit("✅ Phát hiện đăng nhập thành công!")
+        except Exception as e:
+            self.status_update.emit(f"❌ Lỗi khi chờ đăng nhập: {e}. Có thể người dùng chưa đăng nhập hoặc element không xuất hiện.")
+            self.driver.quit()
+            raise
+
+        # Lấy cookie sau khi đăng nhập thành công
+        cookies = self.driver.get_cookies()
+        self.save_cookies_to_settings(cookies)
+
+        self.status_update.emit("✅ Đã lấy cookie thành công!")
+        # driver.quit()
+        return self.session
+    
+    def fetch_page_content(self, url):
+        """Lấy nội dung HTML từ một trang và trích xuất email, dùng Selenium cho Facebook và requests cho các trang khác."""
+        if self.main_window.is_facebook_url(url):
+            # Nếu chưa có driver hoặc driver đã bị đóng, tạo mới
+            if not hasattr(self, 'driver') or self.driver is None:
+                self.login_facebook_selenium()  # Khởi tạo driver nếu chưa có
+            else:
+                try:
+                    self.driver.current_url
+                except:
+                    self.driver = self.setup_selenium_driver()
+                    self.login_facebook_selenium()
+            
+            # Điều hướng đến URL được cung cấp
+            self.driver.get(url)
+            
+            # Lưu danh sách các nút đã click để tránh click lại
+            clicked_buttons = set()
+            last_click = 0
+            collected_emails = set()  # Tập hợp lưu email thu thập được
+            text_content_list = []  # Danh sách lưu nội dung văn bản
+            for _ in range(self.scroll_times):
+                if not self.is_running:
+                    break
+                # Kiểm tra nút "Xem thêm" hiện có trên trang
+                see_more_xpath = """
+                //div[@data-tracking-duration-id and @data-actual-height and @data-mcomponent='MContainer' and @data-type='container' and contains(@class, 'm')]
+                /descendant::div[@data-type='container' and @data-focusable='true' and @data-tti-phase='-1' and @data-focusable='true' and @tabindex='0' and @data-action-id and @data-actual-height]
+                /descendant::div[@data-mcomponent='TextArea' and @data-type='text' and @data-focusable='true' and @data-tti-phase='-1' and @data-focusable='true' and @tabindex='0' and @data-action-id]
+                /div[@class='native-text' and @dir='auto']
+                """
+                
+                see_more_buttons = self.driver.find_elements(By.XPATH, see_more_xpath)
+                for see_more_btn in see_more_buttons:
+                    try:
+                        if self.driver.current_url.rstrip("/") != url.rstrip("/"):
+                            self.driver.back()
+                        # if see_more_btn.is_displayed() and see_more_btn not in clicked_buttons and see_more_btn.is_enabled() and see_more_btn.location['y'] > last_click:
+                        if see_more_btn not in clicked_buttons and see_more_btn.is_enabled() and see_more_btn.location['y'] > last_click:
+                            span_text = see_more_btn.text.strip()
+                            print(span_text)
+                            if "... " in span_text:  # Chỉ click nếu chứa "... "
+                                # Cuộn đến nút để đảm bảo nó nằm trong viewport
+                                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", see_more_btn)
+                                time.sleep(1)
+                                # Click nút "Xem thêm"
+                                self.driver.execute_script("arguments[0].click();", see_more_btn)
+                                clicked_buttons.add(see_more_btn)
+                                last_click = see_more_btn.location['y']
+                                print(f"✔ Click vào nút tại vị trí Y={see_more_btn.location['y']}")
+                            else:
+                                print(f"⏩ Bỏ qua nút không phải 'Xem thêm' (Nội dung: {span_text})")
+                    except Exception as e:
+                        print(f"❌ Lỗi khi click nút 'Xem thêm': {e}")
+
+                # Cuộn trang từ từ nếu không có nút cần click
+                last_height = self.driver.execute_script("return document.body.scrollHeight")
+                method = random.choice(['pgdwn_key', 'js_scroll'])
+                if method == 'pgdwn_key':
+                    self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.PAGE_DOWN)
+                else:
+                    self.driver.execute_script("window.scrollBy(0, window.innerHeight * 0.8);")
+                time.sleep(random.uniform(1, 2))
+                new_height = self.driver.execute_script("return document.body.scrollHeight")
+                
+                if new_height == last_height:  # Nếu không thay đổi chiều cao
+                    self.smooth_scroll_to_top()  # Cuộn lên mượt
+                    self.smooth_scroll_to_position(last_height)  # Quay lại vị trí cũ
+                
+                html_content = self.driver.page_source
+                # Lấy mã nguồn HTML sau khi cuộn
+                html_content = self.driver.page_source
+                soup = BeautifulSoup(html_content, 'html.parser')
+                emails = self.main_window.extract_emails_from_html(html_content)
+                # text_content = soup.get_text(separator=" ").strip()
+                collected_emails.update(emails)  # Thêm email mới vào tập hợp (không trùng lặp)
+                text_content_list.append(soup.get_text(separator=" ").strip())
+            text_content = "\n".join(text_content_list)
+            return text_content, list(collected_emails), None
+        else:
+            # Logic hiện tại cho các trang không phải Facebook
+            html_content, error = self.main_window.fetch_html(url)
+            if error or not html_content:
+                return None, set(), None
+            
+            soup = BeautifulSoup(html_content, 'html.parser')
+            emails = self.main_window.extract_emails_from_html(html_content)
+            text_content = soup.get_text(separator=" ").strip()
+            
+            # Tìm liên kết tiếp theo nếu có XPath
+            next_url = None
+            if self.xpath:
+                tree = html.fromstring(html_content)
+                next_elements = tree.xpath(self.xpath)
+                if next_elements and hasattr(next_elements[0], 'get'):
+                    next_url = next_elements[0].get('href')
+                    if next_url and not next_url.startswith('http'):
+                        next_url = urlparse(url)._replace(path=next_url).geturl()
+            
+            return text_content, emails, next_url
+
+    def smooth_scroll_to_top(self):
+        """Cuộn mượt lên đầu trang và kiểm tra đến khi đạt vị trí Y = 0."""
+        self.driver.execute_script("""
+            function smoothScrollUp() {
+                let currentScroll = window.scrollY;
+                function step() {
+                    if (currentScroll > 0) {
+                        window.scrollBy(0, -50);  // Cuộn lên 50px mỗi lần
+                        currentScroll -= 50;
+                        requestAnimationFrame(step);
+                    }
+                }
+                step();
+            }
+            smoothScrollUp();
+        """)
+
+        # Chờ đến khi vị trí Y = 0
+        max_attempts = 100  # Giới hạn số lần kiểm tra
+        while max_attempts > 0:
+            current_y = self.driver.execute_script("return window.scrollY")
+            if current_y == 0:
+                break  # Đã cuộn xong
+            time.sleep(0.1)
+            max_attempts -= 1
+
+    def smooth_scroll_to_position(self, position):
+        """Cuộn mượt đến vị trí ban đầu và kiểm tra đến khi đạt đúng vị trí."""
+        self.driver.execute_script("""
+            function smoothScrollDown(target) {
+                let currentScroll = window.scrollY;
+                function step() {
+                    if (currentScroll < target) {
+                        window.scrollBy(0, 50);  // Cuộn xuống 50px mỗi lần
+                        currentScroll += 50;
+                        requestAnimationFrame(step);
+                    }
+                }
+                step();
+            }
+            smoothScrollDown(arguments[0]);
+        """, position)
+
+        # Chờ đến khi vị trí Y = position
+        max_attempts = 100
+        while max_attempts > 0:
+            current_y = self.driver.execute_script("return window.scrollY")
+            if abs(current_y - position) < 5:  # Chấp nhận sai số nhỏ
+                break
+            time.sleep(0.1)
+            max_attempts -= 1
+        time.sleep(3)
 
     def run(self):
         """Bắt đầu quá trình thu thập email"""
@@ -1526,8 +2225,17 @@ class GatherEmailsWorker(QObject):
         try:
             executor = ThreadPoolExecutor(max_workers=self.max_workers)
             futures = []
+            initial_url = self.convert_to_mbasic(self.url)
+            current_url = initial_url
 
-            if self.use_sitemap:
+            if self.main_window.is_facebook_url(self.url):
+                # Xử lý Facebook: chỉ gọi fetch_page_content một lần với cuộn
+                content, emails, _ = self.fetch_page_content(self.url)
+                if content:
+                    self.content += content + "\n\n"
+                    self.emails.update(emails)
+                    self.content_signal.emit(self.content)
+            elif self.use_sitemap:
                 sitemap_url = self.main_window.get_sitemap_url(self.url)
                 if sitemap_url:
                     urls = self.main_window.parse_sitemap(sitemap_url)
@@ -1537,36 +2245,34 @@ class GatherEmailsWorker(QObject):
                     self.finished.emit(set())
                     return
             else:
-                futures.append(executor.submit(self.main_window.process_url, self.url))
+                futures.append(executor.submit(self.main_window.process_url, current_url))
 
-            # Theo dõi tiến trình
-            for future in as_completed(futures):
-                if not self.is_running:
-                    break
-                emails = future.result()
-                self.emails.update(emails)
-
-            self.status_update.emit(f"✅ Thu thập hoàn tất! Tìm thấy {len(self.emails)} email.")
+            # Thu thập email từ các futures (cho trường hợp không phải Facebook)
+            if futures:
+                # Theo dõi tiến trình
+                for future in as_completed(futures):
+                    if not self.is_running:
+                        break
+                    emails = future.result()
+                    self.emails.update(emails)
+                self.status_update.emit(f"✅ Thu thập hoàn tất! Tìm thấy {len(self.emails)} email.")
         except Exception as e:
             self.status_update.emit(f"❌ Lỗi trong quá trình thu thập: {e}")
+        finally:
+            if self.driver:
+                self.driver.quit()
+                self.driver = None  # Đặt lại driver về None sau khi đóng
         
+        if self.main_window.is_facebook_url(self.url):  # Gọi từ main_window
+            self.content_signal.emit(self.content)
         self.finished.emit(self.emails)
-
 
     def stop(self):
         """Dừng quá trình thu thập"""
         self.is_running = False
 
 if __name__ == "__main__":
-    app = QApplication([])
-    # app = QApplication(sys.argv)
-    
-    # Đặt icon cho Taskbar khi ứng dụng chạy
-    if hasattr(sys, "_MEIPASS"):
-        icon_path = os.path.join(sys._MEIPASS, "logo.ico")
-    else:
-        icon_path = "logo.ico"
-
+    app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(icon_path))  # Đặt biểu tượng cho ứng dụng
     window = BulkEmailSender()
     window.setWindowIcon(QIcon(icon_path))  # Đặt biểu tượng cho cửa sổ
