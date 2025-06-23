@@ -1,4 +1,5 @@
 import smtplib
+import pickle
 import ssl
 import csv
 import time
@@ -39,12 +40,15 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
 if hasattr(sys, "_MEIPASS"):  # Khi chạy từ bundle của PyInstaller
     icon_path = os.path.join(sys._MEIPASS, "logo.ico")
 else:  # Khi chạy từ mã nguồn
     icon_path = "logo.ico"
 
+version = "1.4.1"
+released_date = "23/06/2025"
 SETTINGS_FILE = "settings.json"
 DEFAULT_SETTINGS = {
     "lm_url_default": "http://localhost:1234",
@@ -114,7 +118,7 @@ class EmailSenderWorker(QObject):
     progress_signal = pyqtSignal(int)
     summary_signal = pyqtSignal(dict)
 
-    def __init__(self, parent, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None, cc=None, bcc=None, use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=None, max_delay=None):
+    def __init__(self, parent, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None, cc=None, bcc=None, use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=None, max_delay=None, local_ai_url=None):
         super().__init__()
         self.parent = parent  # Lưu widget cha
         self.smtp_server = smtp_server
@@ -140,6 +144,7 @@ class EmailSenderWorker(QObject):
         self.model = model
         self.min_delay = min_delay
         self.max_delay = max_delay
+        self.local_ai_url = local_ai_url
 
     def stop(self):
         """Đặt cờ để dừng quá trình gửi email"""
@@ -159,13 +164,17 @@ class EmailSenderWorker(QObject):
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}]
                 )
-                return response.choices[0].message.content
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                return cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "LM Studio":
-                if self.ai_server == "LM Studio":
-                    if hasattr(self.parent, 'local_ai_url_input'):
-                        url = self.parent.local_ai_url_input.text().strip().rstrip("/") + "/v1/chat/completions"
-                    else:
-                        url = "http://localhost:1234/v1/chat/completions"  # Giá trị mặc định nếu không có local_ai_url_input
+                if not self.local_ai_url:
+                    self.error_signal.emit("Lỗi AI: URL cho LM Studio không được cung cấp.")
+                    return self.body # Trả về body mặc định
+                
+                # Sử dụng URL đã được truyền vào
+                url = self.local_ai_url.rstrip("/") + "/v1/chat/completions"
                 headers = {"Content-Type": "application/json"}
                 data = {
                     "model": self.model,
@@ -185,10 +194,12 @@ class EmailSenderWorker(QObject):
                 cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
                 return cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "Ollama":
-                if hasattr(self.parent, 'local_ai_url_input'):
-                    base_url = self.parent.local_ai_url_input.text().strip().rstrip("/") + "/v1/"
-                else:
-                    base_url = "http://localhost:11434/v1/"  # Giá trị mặc định nếu không có local_ai_url_input
+                if not self.local_ai_url:
+                    self.error_signal.emit("Lỗi AI: URL cho Ollama không được cung cấp.")
+                    return self.body
+                
+                # Sử dụng URL đã được truyền vào
+                base_url = self.local_ai_url.rstrip("/") + "/v1/"
                 client = OpenAI(api_key='ollama', base_url=base_url)
                 response = client.chat.completions.create(
                     model=self.model,
@@ -203,7 +214,10 @@ class EmailSenderWorker(QObject):
                 genai.configure(api_key=self.api_key)
                 model_obj = genai.GenerativeModel(self.model)
                 response = model_obj.generate_content(prompt)
-                return response.text
+                raw_content = response.text
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                return cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "Groq":
                 client = groq.Client(api_key=self.api_key)
                 response = client.chat.completions.create(
@@ -482,13 +496,14 @@ class ContentGeneratorWorker(QObject):
     result_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, parent, ai_server, api_key, prompt, model):
+    def __init__(self, ai_server, api_key, prompt, model, local_ai_url=None):
         super().__init__()
-        self.parent = parent  # Lưu widget cha
+        # self.parent = parent  # Lưu widget cha
         self.ai_server = ai_server
         self.api_key = api_key
         self.prompt = prompt
         self.model = model
+        self.local_ai_url = local_ai_url  # Lưu URL được truyền vào
     
     def remove_think_tags(self, content):
         """Xóa toàn bộ nội dung nằm trong thẻ <think>...</think>"""
@@ -502,13 +517,16 @@ class ContentGeneratorWorker(QObject):
                     model=self.model,
                     messages=[{"role": "user", "content": self.prompt}]
                 )
-                generated = response.choices[0].message.content
+                raw_content = response.choices[0].message.content
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                generated = cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "LM Studio":
-                if self.ai_server == "LM Studio":
-                    if hasattr(self.parent, 'local_ai_url_input'):
-                        url = self.parent.local_ai_url_input.text().strip() + "/v1/chat/completions"
-                    else:
-                        url = "http://localhost:1234/v1/chat/completions"  # Giá trị mặc định nếu không có local_ai_url_input
+                if not self.local_ai_url:
+                    self.error_signal.emit("URL cho LM Studio không được cung cấp.")
+                    return
+                # Sử dụng URL đã được truyền vào, không truy cập GUI
+                url = self.local_ai_url.rstrip("/") + "/v1/chat/completions"
                 headers = {"Content-Type": "application/json"}
                 data = {
                     "model": self.model,
@@ -520,13 +538,16 @@ class ContentGeneratorWorker(QObject):
                     print(f"Lỗi từ server: {response.status_code} - {response.text}")
                     return
                 response_data = response.json()
-                generated = response_data["choices"][0]["message"]["content"]
+                raw_content = response_data["choices"][0]["message"]["content"]
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                generated = cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "Ollama":
-                if self.ai_server == "Ollama":
-                    if hasattr(self.parent, 'local_ai_url_input'):
-                        base_url = self.parent.local_ai_url_input.text().strip() + "/v1/"
-                    else:
-                        base_url = "http://localhost:11434/v1/"  # Giá trị mặc định nếu không có local_ai_url_input
+                if not self.local_ai_url:
+                    self.error_signal.emit("URL cho Ollama không được cung cấp.")
+                    return
+                # Sử dụng URL đã được truyền vào
+                base_url = self.local_ai_url.rstrip("/") + "/v1/"
                 client = OpenAI(api_key='ollama', base_url=base_url)
                 response = client.chat.completions.create(
                     model=self.model,
@@ -541,7 +562,10 @@ class ContentGeneratorWorker(QObject):
                 genai.configure(api_key=self.api_key)
                 model = genai.GenerativeModel(self.model)
                 response = model.generate_content(self.prompt)
-                generated = response.text
+                raw_content = response.text
+                cleaned_content = self.remove_think_tags(raw_content)  # Xóa phần <think>
+                cleaned_content = re.sub(r"^```(?:html)?\n?|```$", "", cleaned_content, flags=re.MULTILINE)  # Loại bỏ dấu ```
+                generated = cleaned_content.strip()  # Loại bỏ khoảng trắng thừa
             elif self.ai_server == "Groq":
                 client = groq.Client(api_key=self.api_key)
                 response = client.chat.completions.create(
@@ -925,8 +949,8 @@ class BulkEmailSender(QWidget):
         about_info = {
             "Tác giả": "TekDT",
             "Phần mềm": "AI Bulk Mailer",
-            "Phiên bản": "1.3.0",
-            "Ngày phát hành": "26/03/2025",
+            "Phiên bản": version,
+            "Ngày phát hành": released_date,
             "Mô tả": "Phần mềm gửi email hàng loạt với khả năng hỗ trợ đa luồng, tạo nội dung tự động bằng nhiều mô hình AI và thu thập tất cả email trên một trang web, hỗ trợ thu thập mail trên nhóm facebook."
         }
         for key, value in about_info.items():
@@ -972,12 +996,8 @@ class BulkEmailSender(QWidget):
     
     def stop_sending(self):
         if self.is_sending and self.worker:
-            self.worker.stop()  # Dừng worker trước
-            if self.thread is not None and self.thread.isRunning():
-                self.thread.quit()  # Chỉ dừng luồng nếu nó tồn tại và đang chạy
-                self.thread.wait()  # Đợi luồng dừng hoàn toàn
-            self.status_label.setText("⛔ Quá trình gửi email đã bị dừng.")
-            self.stop_sending_button.setEnabled(False)
+            self.log_output.append("▶️ Đang yêu cầu dừng luồng...")
+            self.worker.stop()
     
     def setup_gather_tab(self):
         """Thiết lập tab Gather Mail."""
@@ -1006,6 +1026,10 @@ class BulkEmailSender(QWidget):
         self.scroll_times_input.setVisible(False)  # Ẩn ban đầu
         layout.addWidget(self.scroll_times_label)
         layout.addWidget(self.scroll_times_input)
+        
+        # Thêm checkbox "Chạy Chrome ở chế độ ẩn"
+        self.headless_checkbox = QCheckBox("Chạy Chrome ở chế độ ẩn (headless mode)")
+        layout.addWidget(self.headless_checkbox)
 
         # Ô tick "Dựa trên SiteMap"
         self.sitemap_checkbox = QCheckBox("Dựa trên SiteMap")
@@ -1092,7 +1116,8 @@ class BulkEmailSender(QWidget):
             scroll_times = int(self.scroll_times_input.text().strip()) if self.is_facebook_url(url) else 0
         except ValueError:
             scroll_times = 50  # Nếu nhập sai, dùng giá trị mặc định 50
-        self.worker = GatherEmailsWorker(self, url, self.sitemap_checkbox.isChecked(), max_workers, xpath, scroll_times)
+        headless = self.headless_checkbox.isChecked()
+        self.worker = GatherEmailsWorker(self, url, self.sitemap_checkbox.isChecked(), max_workers, xpath, scroll_times, headless=headless)
         self.worker.moveToThread(self.thread)
 
         # Kết nối tín hiệu
@@ -1101,8 +1126,16 @@ class BulkEmailSender(QWidget):
         self.worker.finished.connect(self.on_gather_finished)
         self.worker.content_signal.connect(self.on_content_gathered)  # Kết nối tín hiệu nội dung
         self.worker.finished.connect(self.cleanup_thread)
+        self.worker.update_output.connect(self.update_output_area)
 
         self.thread.start()
+        
+    def update_output_area(self, emails, phones):
+        output_text = "=== Danh sách Email ===\n"
+        output_text += "\n".join(sorted(emails)) if emails else "Chưa có email nào.\n"
+        output_text += "\n\n=== Danh sách Số điện thoại ===\n"
+        output_text += "\n".join(sorted(phones)) if phones else "Chưa có số điện thoại nào.\n"
+        self.output_area.setText(output_text)
 
     # Hàm kiểm tra và cập nhật trạng thái hiển thị
     def update_scroll_input_visibility(self):
@@ -1114,14 +1147,19 @@ class BulkEmailSender(QWidget):
     def on_content_gathered(self, content):
         """Hiển thị nội dung thu thập được từ Facebook."""
         self.output_area.setText(content if content else "⚠️ Không tìm thấy nội dung.")
-    
+        
     def on_gather_finished(self, emails):
-        """Xử lý khi quá trình thu thập email hoàn tất"""
         self.extracted_emails = emails
-        self.output_area.setText("\n".join(emails) if emails else "️⚠️ Không tìm thấy email nào.")
+        self.worker.phones  # Lấy tập hợp phones từ worker
+        self.update_output_area(self.extracted_emails, self.worker.phones)  # Cập nhật lần cuối
+        self.gather_status_label.setText(f"✅ Hoàn tất: Tìm thấy {len(emails)} email và {len(self.worker.phones)} số điện thoại.")
+        self.export_button.setEnabled(True)
         self.gather_button.setEnabled(True)
         self.stop_gathering_button.setEnabled(False)
-        self.export_button.setEnabled(bool(emails))
+        self.is_gathering = False
+        if self.thread:
+            self.thread.quit()
+            self.thread.wait()
         
     def monitor_futures(self):
         """Theo dõi tiến trình của các luồng và hiển thị kết quả."""
@@ -1162,7 +1200,8 @@ class BulkEmailSender(QWidget):
         html, error = self.fetch_html(url)
         if error:
             return set()
-        emails = set(self.extract_emails_from_html(html))
+        # emails = set(self.extract_emails_and_phones_from_html(html))
+        emails, phones = set(self.main_window.extract_emails_and_phones_from_html(html))
         return emails
 
     def stop_gathering(self):
@@ -1269,25 +1308,61 @@ class BulkEmailSender(QWidget):
         except requests.exceptions.RequestException as e:
             return None, str(e)
         
-    def extract_emails_from_html(self, html):
-        """Trích xuất email từ mã HTML một cách chính xác hơn."""
+    def extract_emails_and_phones_from_html(self, html):
+        """
+        Trích xuất email và số điện thoại từ mã HTML, hỗ trợ nhiều định dạng từ web và bài đăng Facebook.
+        
+        Args:
+            html (str): Chuỗi HTML cần phân tích.
+        
+        Returns:
+            tuple: (danh sách email, danh sách số điện thoại đã chuẩn hóa).
+        """
         soup = BeautifulSoup(html, 'html.parser')
-        emails = set()
+        emails = set()  # Dùng set để tránh trùng lặp
+        phones = set()
 
-        # Lấy email từ liên kết mailto
+        # --- Trích xuất Email ---
+
+        # 1. Từ liên kết mailto trong href
         for a in soup.find_all('a', href=True):
             if a['href'].startswith('mailto:'):
-                email = a['href'][7:].split('?')[0]
-                # Kiểm tra email bằng biểu thức regex chặt chẽ
-                if re.fullmatch(r'(?<!\S)[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?!\S)', email):
+                parsed = urlparse(a['href'])
+                email = parsed.path  # Lấy phần sau 'mailto:'
+                # Kiểm tra định dạng email hợp lệ
+                if re.fullmatch(r'(?<!\S)[A-Za-z0-9]+(?:[._%+-][A-Za-z0-9]+)*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?!\S)', email):
                     emails.add(email)
 
-        # Lấy email từ văn bản thông qua get_text()
-        # Dùng separator=" " để đảm bảo các đoạn văn bản được ngăn cách bằng khoảng trắng
+        # 2. Từ văn bản thông thường
         text = soup.get_text(separator=" ")
-        found = re.findall(r'(?<!\S)[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?!\S)', text)
-        emails.update(found)
-        return emails
+        email_pattern = r'(?<!\S)[A-Za-z0-9]+(?:[._%+-][A-Za-z0-9]+)*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?!\S)'
+        found_emails = re.findall(email_pattern, text)
+        emails.update(found_emails)
+        print(found_emails)
+
+        # --- Trích xuất Số điện thoại ---
+
+        # Tìm số điện thoại với các định dạng khác nhau
+        phone_pattern = r'(?<!\d)(?:\+84|84|0)(?:[\s.-]*\d){9,10}(?!\d)'
+        found_phones_raw = re.findall(phone_pattern, text)
+        print(found_phones_raw)
+
+        # Chuẩn hóa số điện thoại
+        for phone in found_phones_raw:
+            # Loại bỏ ký tự không phải số
+            cleaned_phone = re.sub(r'\D', '', phone)
+            # Chuẩn hóa: thay thế +84 hoặc 84 bằng 0
+            if cleaned_phone.startswith('84'):
+                standardized_phone = '0' + cleaned_phone[2:]
+            elif cleaned_phone.startswith('+84'):
+                standardized_phone = '0' + cleaned_phone[3:]
+            else:
+                standardized_phone = cleaned_phone
+            # Kiểm tra độ dài hợp lệ (10 chữ số cho số nội địa Việt Nam)
+            if len(standardized_phone) == 10 and standardized_phone.startswith('0'):
+                phones.add(standardized_phone)
+
+        return list(emails), list(phones)
     
     def export_emails_to_csv(self):
         """Xuất danh sách email ra file CSV."""
@@ -1553,6 +1628,7 @@ class BulkEmailSender(QWidget):
         api_key = self.api_key_input.text().strip()
         ai_prompt = self.prompt_input.toPlainText().strip()
         model = self.model_combo.currentText()
+        local_ai_url = self.local_ai_url_input.text().strip()
         # Lấy và kiểm tra giá trị min_delay và max_delay từ giao diện
         try:
             min_delay = int(self.min_delay_input.text().strip())
@@ -1573,7 +1649,7 @@ class BulkEmailSender(QWidget):
         self.total_recipients = len(self.recipients)
 
         self.thread = QThread()
-        self.worker = EmailSenderWorker(self, smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, cc=cc, bcc=bcc, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model, min_delay=min_delay, max_delay=max_delay)
+        self.worker = EmailSenderWorker(self, smtp_server, port, sender_email, password, subject, body, self.recipients, connection_security, reply_to, cc=cc, bcc=bcc, use_oauth=use_oauth, oauth_config=oauth_config, refresh_token=refresh_token, auto_integration=auto_integration, ai_server=ai_server, api_key=api_key, ai_prompt=ai_prompt, model=model, min_delay=min_delay, max_delay=max_delay, local_ai_url=local_ai_url)
         self.worker.success_signal.connect(self.on_email_sent_successfully)
         self.worker.moveToThread(self.thread)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
@@ -1581,12 +1657,17 @@ class BulkEmailSender(QWidget):
         self.worker.summary_signal.connect(self.on_summary)
         self.worker.error_signal.connect(self.on_error)
         self.thread.started.connect(self.worker.run)
-        self.worker.summary_signal.connect(self.thread.quit)
-        self.worker.summary_signal.connect(self.worker.deleteLater)
+        
+        # self.worker.summary_signal.connect(self.thread.quit)
+        # self.worker.summary_signal.connect(self.worker.deleteLater)
+        # self.thread.finished.connect(self.thread.deleteLater)
+        # self.thread.finished.connect(lambda: self.stop_sending_button.setEnabled(False))
+        # self.thread.finished.connect(lambda: self.send_button.setEnabled(True))
+        # self.thread.finished.connect(lambda: setattr(self, 'is_sending', False))  # Reset flag khi luồng hoàn thành
+        self.thread.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.finished.connect(lambda: self.stop_sending_button.setEnabled(False))
-        self.thread.finished.connect(lambda: self.send_button.setEnabled(True))
-        self.thread.finished.connect(lambda: setattr(self, 'is_sending', False))  # Reset flag khi luồng hoàn thành
+        self.thread.finished.connect(self.on_sending_finished) # Tạo hàm mới để xử lý UI
+
         self.thread.start()
         QApplication.processEvents()
 
@@ -1605,13 +1686,10 @@ class BulkEmailSender(QWidget):
     def on_error(self, error_msg):
         self.status_label.setText(f"❌ Lỗi: {error_msg}")
         self.log_output.append(f"❌ Lỗi: {error_msg}")
-        if self.thread is not None and self.thread.isRunning():
+        # Chỉ cần dừng luồng, không cần wait()
+        if self.thread and self.thread.isRunning():
+            self.worker.stop() # Yêu cầu worker dừng lại sớm
             self.thread.quit()
-            self.thread.wait()
-            self.thread.deleteLater()
-            self.thread = None
-        self.send_button.setEnabled(True)
-        self.is_sending = False
 
     def on_summary(self, summary):
         total = summary["total"]
@@ -1626,14 +1704,18 @@ class BulkEmailSender(QWidget):
             self.log_output.append("❌ Danh sách gửi không thành công:")
             for recipient, error in failed_recipients.items():
                 self.log_output.append(f"- {recipient}: {error}")
-        if self.thread is not None and self.thread.isRunning():
+        if self.thread and self.thread.isRunning():
             self.thread.quit()
-            self.thread.wait()
-            self.thread.deleteLater()
-            self.thread = None
-        self.send_button.setEnabled(True)
-        self.is_sending = False
 
+    def on_sending_finished(self):
+        """Được gọi khi luồng gửi mail kết thúc."""
+        self.is_sending = False
+        self.send_button.setEnabled(True)
+        self.stop_sending_button.setEnabled(False)
+        self.thread = None # Đánh dấu luồng đã được dọn dẹp
+        self.worker = None
+        self.log_output.append("------------------\nLuồng gửi mail đã kết thúc.")
+    
     def generate_content(self):
         # Kiểm tra nếu có thread cũ, đảm bảo nó đã kết thúc hoàn toàn trước khi tạo mới
         if hasattr(self, 'gen_thread') and self.gen_thread is not None:
@@ -1653,13 +1735,16 @@ class BulkEmailSender(QWidget):
         if not model:
             self.gen_status_label.setText("⚠️ Vui lòng chọn model.")
             return
+            
+        # Lấy local_ai_url TẠI ĐÂY, trên luồng chính
+        local_ai_url = self.local_ai_url_input.text().strip()
 
         self.gen_status_label.setText("♾️ Đang tạo nội dung...")
         self.generate_button.setEnabled(False)
         self.apply_button.setEnabled(False)
         # Tạo luồng mới
         self.gen_thread = QThread()
-        self.gen_worker = ContentGeneratorWorker(self, ai_server, api_key, prompt, model)
+        self.gen_worker = ContentGeneratorWorker(ai_server, api_key, prompt, model, local_ai_url) 
         self.gen_worker.moveToThread(self.gen_thread)
         # Kết nối tín hiệu
         self.gen_worker.result_signal.connect(self.on_gen_result)
@@ -1767,6 +1852,7 @@ class BulkEmailSender(QWidget):
                 self.url_input.setText(settings.get("gather_url", ""))
                 self.xpath_input.setText(settings.get("xpath", ""))
                 self.sitemap_checkbox.setChecked(settings.get("sitemap", False))
+                self.headless_checkbox.setChecked(settings.get("headless_mode", False))
                 self.thread_count_input.setText(settings.get("thread_count", "5"))
                 # Load settings từ file hoặc cấu hình
                 ai_server = settings.get("ai_server", "ChatGPT")
@@ -1832,7 +1918,6 @@ class BulkEmailSender(QWidget):
             "reply_to": self.reply_input.text(),
             "cc_input": self.cc_input.text(),
             "bcc_input": self.bcc_input.text(),
-            # "smtp_provider_index": self.provider_combo.currentIndex(),
             "smtp_provider": self.provider_combo.currentText(),
             "custom_smtp": self.custom_smtp_input.text(),
             "custom_port": self.custom_port_input.text(),
@@ -1851,6 +1936,7 @@ class BulkEmailSender(QWidget):
             "gather_url": self.url_input.text(),
             "xpath": self.xpath_input.text(),
             "sitemap": self.sitemap_checkbox.isChecked(),
+            "headless_mode": self.headless_checkbox.isChecked(),
             "thread_count": self.thread_count_input.text(),
             "use_oauth": self.oauth_checkbox.isChecked(),
             "client_id": self.client_id_input.text(),
@@ -1859,9 +1945,6 @@ class BulkEmailSender(QWidget):
             "min_delay": self.min_delay_input.text(),
             "max_delay": self.max_delay_input.text(),
         }
-        # Giữ lại facebook_cookies từ settings hiện tại nếu có
-        if "facebook_cookies" in current_settings:
-            settings["facebook_cookies"] = current_settings["facebook_cookies"]
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(settings, f, ensure_ascii=False, indent=4)
@@ -1901,8 +1984,9 @@ class GatherEmailsWorker(QObject):
     finished = pyqtSignal(set)  # Tín hiệu hoàn tất thu thập
     content_signal = pyqtSignal(str)  # Tín hiệu trả về nội dung văn bản từ Facebook
     status_update = pyqtSignal(str)  # Tín hiệu cập nhật trạng thái
+    update_output = pyqtSignal(set, set)
 
-    def __init__(self, main_window, url, use_sitemap, max_workers, xpath, scroll_times=50):
+    def __init__(self, main_window, url, use_sitemap, max_workers, xpath, scroll_times=50, headless=False):
         super().__init__()
         self.main_window = main_window  # Truy cập hàm từ BulkEmailSender
         self.url = url
@@ -1911,10 +1995,12 @@ class GatherEmailsWorker(QObject):
         self.xpath = xpath
         self.is_running = True
         self.emails = set()
+        self.phones = set()
         self.content = ""
         self.session = None
         self.driver = None
         self.scroll_times = scroll_times
+        self.headless = headless
         
     def convert_to_mbasic(self, url):
         """Chuyển URL Facebook sang phiên bản mbasic."""
@@ -1927,6 +2013,10 @@ class GatherEmailsWorker(QObject):
         """Cấu hình Selenium với Chrome, tắt JavaScript và tối ưu hóa."""
         chrome_options = Options()
         
+        # Kích hoạt headless mode nếu được chọn
+        if self.headless:
+            chrome_options.add_argument('--headless')
+        
         # Tắt JavaScript
         chrome_options.add_argument('--disable-javascript')
         
@@ -1937,69 +2027,78 @@ class GatherEmailsWorker(QObject):
         }
         chrome_options.add_experimental_option("prefs", prefs)
         
-        # Chạy ở chế độ headless (không hiển thị giao diện) nếu không cần nhập 2FA thủ công
-        chrome_options.add_argument('--headless')  # Bỏ comment nếu muốn chạy ẩn
-        
         # Giả lập User-Agent đơn giản cho mbasic
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Mobile Safari/537.36')
         
         driver = webdriver.Chrome(options=chrome_options)
         return driver
-        
+            
     def is_logged_in(self):
-        """Kiểm tra trạng thái đăng nhập bằng requests dựa trên cookie trong session."""
-        if not self.session:
-            self.status_update.emit("⚠️ Chưa có session để kiểm tra đăng nhập.")
+        if not hasattr(self, 'driver') or self.driver is None:
+            print("Driver chưa được khởi tạo trong is_logged_in.")
+            self.status_update.emit("❌ Driver chưa được khởi tạo trong is_logged_in.")
             return False
-
         try:
-            response = self.session.get('https://m.facebook.com')
-            if response.status_code == 200 and 'data-mcomponent="ServerImageArea"' in response.text:
-                self.status_update.emit("✅ Đã đăng nhập từ trước!")
+            print("Đang kiểm tra trạng thái đăng nhập...")
+            self.driver.get('https://m.facebook.com/login.php')
+            WebDriverWait(self.driver, 10).until(
+                lambda d: d.execute_script('return document.readyState') == 'complete'
+            )
+            try:
+                self.driver.find_element(By.XPATH, "//div[@role='tablist' and @data-type='container' and @data-mcomponent='MContainer' and contains(@class, 'm') and @data-actual-height]")
+                print("Không tìm thấy form đăng nhập, đã đăng nhập.")
+                self.status_update.emit("✅ Không tìm thấy form đăng nhập, đã đăng nhập.")
                 return True
-            else:
-                self.status_update.emit("⚠️ Chưa đăng nhập hoặc cookie hết hạn.")
+            except NoSuchElementException:
+                print("Tìm thấy form đăng nhập, chưa đăng nhập.")
+                self.status_update.emit("⚠️ Tìm thấy form đăng nhập, chưa đăng nhập.")
                 return False
         except Exception as e:
+            print(f"Lỗi trong is_logged_in: {e}")
             self.status_update.emit(f"❌ Lỗi khi kiểm tra đăng nhập: {e}")
             return False
             
-    def load_cookies_from_settings(self):
-        """Tải cookie từ settings.json và thêm vào Selenium driver."""
-        if os.path.exists(SETTINGS_FILE):
+    def load_cookies(self):
+        cookie_file = 'facebook_cookies.pkl'
+        if os.path.exists(cookie_file):
             try:
-                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                    settings = json.load(f)
-                    saved_cookies = settings.get("facebook_cookies", None)
-                    if saved_cookies:
-                        if self.driver is None:  # Chỉ tạo driver nếu chưa tồn tại
-                            self.driver = self.setup_selenium_driver()
-                        self.driver.get('https://m.facebook.com')  # Tải trang trước khi thêm cookie
-                        self.driver.delete_all_cookies()  # Xóa cookie cũ (nếu có)
-                        for cookie in saved_cookies:
-                            self.driver.add_cookie(cookie)
-                        self.driver.refresh()  # Tải lại trang để áp dụng cookie
-                        self.status_update.emit("✅ Đã tải cookie và refresh trang!")
-                        return True
+                with open(cookie_file, 'rb') as file:
+                    cookies = pickle.load(file)
+                if self.driver is None:
+                    self.driver = self.setup_selenium_driver()
+                self.driver.get('https://m.facebook.com/login.php')
+                for cookie in cookies:
+                    self.driver.add_cookie(cookie)
+                self.driver.refresh()
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: d.execute_script('return document.readyState') == 'complete'
+                )
+                self.status_update.emit("✅ Đã nạp cookie từ file facebook_cookies.pkl!")
+                # Kiểm tra trạng thái driver
+                try:
+                    current_url = self.driver.current_url
+                    print(f"Driver vẫn hoạt động sau khi nạp cookie. URL hiện tại: {current_url}")
+                except Exception as e:
+                    print(f"Driver đã bị đóng sau khi nạp cookie: {e}")
+                    self.status_update.emit(f"❌ Driver đã bị đóng sau khi nạp cookie: {e}")
+                    return False
+                return True
             except Exception as e:
-                self.status_update.emit(f"❌ Lỗi khi tải cookie từ settings: {e}")
-        return False
+                self.status_update.emit(f"❌ Lỗi khi nạp cookie từ file: {e}")
+                print(f"Lỗi khi nạp cookie: {e}")
+                return False
+        else:
+            self.status_update.emit("⚠️ Không tìm thấy file facebook_cookies.pkl.")
+            return False
         
-    def save_cookies_to_settings(self, cookies):
-        """Lưu cookie vào settings.json."""
+    def save_cookies(self, cookies):
+        """Lưu cookie vào file facebook_cookies.pkl."""
         try:
-            if os.path.exists(SETTINGS_FILE):
-                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                    settings = json.load(f)
-            else:
-                settings = {}
-
-            settings["facebook_cookies"] = cookies
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(settings, f, ensure_ascii=False, indent=4)
-            self.status_update.emit("✅ Đã lưu cookie vào settings!")
+            with open('facebook_cookies.pkl', 'wb') as file:
+                pickle.dump(cookies, file)
+            self.status_update.emit("✅ Đã lưu cookie vào file facebook_cookies.pkl!")
         except Exception as e:
-            self.status_update.emit(f"❌ Lỗi khi lưu cookie vào settings: {e}")
+            self.status_update.emit(f"❌ Lỗi khi lưu cookie vào file: {e}")
     
     def check_facebook_login(self):
         """
@@ -2034,37 +2133,57 @@ class GatherEmailsWorker(QObject):
     def login_facebook_selenium(self):
         if not hasattr(self, 'driver') or self.driver is None:
             self.driver = self.setup_selenium_driver()
-        # Tải cookie từ settings trước
-        self.load_cookies_from_settings()
-        self.check_facebook_login()
-        
-        # Kiểm tra xem đã đăng nhập chưa
-        if self.is_logged_in():
-            return
+
+        if self.load_cookies():
+            try:
+                current_url = self.driver.current_url
+                print(f"Driver vẫn hoạt động trước khi kiểm tra đăng nhập. URL: {current_url}")
+            except Exception as e:
+                print(f"Driver không hoạt động trước khi kiểm tra đăng nhập: {e}")
+                self.status_update.emit(f"❌ Driver không hoạt động trước khi kiểm tra đăng nhập: {e}")
+                return
+
+            if self.is_logged_in():
+                self.status_update.emit("✅ Đã đăng nhập bằng cookie từ file!")
+                try:
+                    print(f"Driver sau đăng nhập: {self.driver.current_url}")
+                except Exception as e:
+                    print(f"Driver bị đóng sau đăng nhập: {e}")
+                    self.driver = self.setup_selenium_driver()
+                    self.login_facebook_selenium()
+                    
+                self.driver.get(self.url)
+                time.sleep(5)  # Chờ trang tải
+                if "login" in self.driver.current_url:
+                    self.status_update.emit("⚠️ Cookie không đủ quyền, yêu cầu đăng nhập lại")
+                    os.remove('facebook_cookies.pkl')
+                    self.login_facebook_selenium()
+                    
+                    
+                return
+            else:
+                if os.path.exists('facebook_cookies.pkl'):
+                    os.remove('facebook_cookies.pkl')
+                    self.status_update.emit("⚠️ Cookie hết hạn, đã xóa file facebook_cookies.pkl.")
 
         self.status_update.emit("⌛ Vui lòng đăng nhập vào Facebook trong trình duyệt...")
-
+        self.driver.get('https://m.facebook.com')
         try:
-            # Chờ element đặc trưng xuất hiện (đăng nhập thành công)
-            # Sử dụng thuộc tính aria-label="Đi tới trang cá nhân" để xác định
             WebDriverWait(self.driver, 300).until(
-                EC.presence_of_element_located((By.XPATH, '//div[@role=\'button\' and @data-focusable=\'true\' and @data-client-focused-component=\'true\']'))
+                EC.presence_of_element_located((By.XPATH, "//div[@role='tablist' and @data-type='container' and @data-mcomponent='MContainer' and contains(@class, 'm') and @data-actual-height]"))
             )
-            self.status_update.emit("✅ Phát hiện đăng nhập thành công!")
+            self.status_update.emit("✅ Đăng nhập thành công!")
+            cookies = self.driver.get_cookies()
+            self.save_cookies(cookies)
+            self.status_update.emit("✅ Đã lấy cookie thành công!")
+            print("✅ Đã lấy cookie thành công!")
         except Exception as e:
-            self.status_update.emit(f"❌ Lỗi khi chờ đăng nhập: {e}. Có thể người dùng chưa đăng nhập hoặc element không xuất hiện.")
-            self.driver.quit()
-            raise
+            self.status_update.emit(f"❌ Lỗi khi chờ đăng nhập: {e}. Có thể người dùng chưa đăng nhập.")
+            # self.driver.quit()
+            # raise
 
-        # Lấy cookie sau khi đăng nhập thành công
-        cookies = self.driver.get_cookies()
-        self.save_cookies_to_settings(cookies)
-
-        self.status_update.emit("✅ Đã lấy cookie thành công!")
-        # driver.quit()
-        return self.session
-    
     def fetch_page_content(self, url):
+        self.status_update.emit(f"Đang thu thập email từ trang {url}")
         """Lấy nội dung HTML từ một trang và trích xuất email, dùng Selenium cho Facebook và requests cho các trang khác."""
         if self.main_window.is_facebook_url(url):
             # Nếu chưa có driver hoặc driver đã bị đóng, tạo mới
@@ -2073,76 +2192,64 @@ class GatherEmailsWorker(QObject):
             else:
                 try:
                     self.driver.current_url
+                    print(1)
                 except:
                     self.driver = self.setup_selenium_driver()
                     self.login_facebook_selenium()
-            
-            # Điều hướng đến URL được cung cấp
-            self.driver.get(url)
-            
-            # Lưu danh sách các nút đã click để tránh click lại
-            clicked_buttons = set()
-            last_click = 0
-            collected_emails = set()  # Tập hợp lưu email thu thập được
-            text_content_list = []  # Danh sách lưu nội dung văn bản
-            for _ in range(self.scroll_times):
-                if not self.is_running:
-                    break
-                # Kiểm tra nút "Xem thêm" hiện có trên trang
+            try:
+                print(f"Điều hướng đến {url}")
+                # Điều hướng đến URL được cung cấp
+                self.driver.get(url)
+                WebDriverWait(self.driver, 20).until(
+                    lambda d: d.execute_script('return document.readyState') == 'complete'
+                )
+                print("Trang đã tải hoàn tất")
+                collected_emails = set()  # Tập hợp lưu email thu thập được
+                collected_phones = set()  # Tập hợp lưu email thu thập được
+                text_content_list = []  # Danh sách lưu nội dung văn bản
                 see_more_xpath = """
                 //div[@data-tracking-duration-id and @data-actual-height and @data-mcomponent='MContainer' and @data-type='container' and contains(@class, 'm')]
                 /descendant::div[@data-type='container' and @data-focusable='true' and @data-tti-phase='-1' and @data-focusable='true' and @tabindex='0' and @data-action-id and @data-actual-height]
                 /descendant::div[@data-mcomponent='TextArea' and @data-type='text' and @data-focusable='true' and @data-tti-phase='-1' and @data-focusable='true' and @tabindex='0' and @data-action-id]
                 /div[@class='native-text' and @dir='auto']
                 """
-                
-                see_more_buttons = self.driver.find_elements(By.XPATH, see_more_xpath)
-                for see_more_btn in see_more_buttons:
-                    try:
-                        if self.driver.current_url.rstrip("/") != url.rstrip("/"):
-                            self.driver.back()
-                        # if see_more_btn.is_displayed() and see_more_btn not in clicked_buttons and see_more_btn.is_enabled() and see_more_btn.location['y'] > last_click:
-                        if see_more_btn not in clicked_buttons and see_more_btn.is_enabled() and see_more_btn.location['y'] > last_click:
-                            span_text = see_more_btn.text.strip()
-                            print(span_text)
-                            if "... " in span_text:  # Chỉ click nếu chứa "... "
-                                # Cuộn đến nút để đảm bảo nó nằm trong viewport
-                                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", see_more_btn)
-                                time.sleep(1)
-                                # Click nút "Xem thêm"
-                                self.driver.execute_script("arguments[0].click();", see_more_btn)
-                                clicked_buttons.add(see_more_btn)
-                                last_click = see_more_btn.location['y']
-                                print(f"✔ Click vào nút tại vị trí Y={see_more_btn.location['y']}")
-                            else:
-                                print(f"⏩ Bỏ qua nút không phải 'Xem thêm' (Nội dung: {span_text})")
-                    except Exception as e:
-                        print(f"❌ Lỗi khi click nút 'Xem thêm': {e}")
 
-                # Cuộn trang từ từ nếu không có nút cần click
+                # Lấy danh sách bài viết và cuộn theo scroll_times
                 last_height = self.driver.execute_script("return document.body.scrollHeight")
-                method = random.choice(['pgdwn_key', 'js_scroll'])
-                if method == 'pgdwn_key':
-                    self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.PAGE_DOWN)
-                else:
-                    self.driver.execute_script("window.scrollBy(0, window.innerHeight * 0.8);")
-                time.sleep(random.uniform(1, 2))
-                new_height = self.driver.execute_script("return document.body.scrollHeight")
-                
-                if new_height == last_height:  # Nếu không thay đổi chiều cao
-                    self.smooth_scroll_to_top()  # Cuộn lên mượt
-                    self.smooth_scroll_to_position(last_height)  # Quay lại vị trí cũ
-                
-                html_content = self.driver.page_source
-                # Lấy mã nguồn HTML sau khi cuộn
-                html_content = self.driver.page_source
-                soup = BeautifulSoup(html_content, 'html.parser')
-                emails = self.main_window.extract_emails_from_html(html_content)
-                # text_content = soup.get_text(separator=" ").strip()
-                collected_emails.update(emails)  # Thêm email mới vào tập hợp (không trùng lặp)
-                text_content_list.append(soup.get_text(separator=" ").strip())
-            text_content = "\n".join(text_content_list)
-            return text_content, list(collected_emails), None
+                for i in range(self.scroll_times):
+                    if not self.is_running:
+                        break
+                    # Cuộn đến cuối trang
+                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(2)  # Đợi trang tải nội dung mới
+                    # Kiểm tra xem có nội dung mới không
+                    new_height = self.driver.execute_script("return document.body.scrollHeight")
+                    if new_height == last_height:
+                        break  # Không có nội dung mới, dừng cuộn
+                    last_height = new_height
+                    # Nhấn "Xem thêm" nếu có
+                    try:
+                        see_more_buttons = self.driver.find_elements(By.XPATH, see_more_xpath)
+                        for button in see_more_buttons:
+                            if "... " in button.text:
+                                self.driver.execute_script("arguments[0].click();", button)
+                                time.sleep(1)
+                    except:
+                        pass
+                    
+                    html_content = self.driver.page_source
+                    emails, phones = self.main_window.extract_emails_and_phones_from_html(html_content)
+                    collected_emails.update(emails)  # Thêm email mới vào tập hợp (không trùng lặp)
+                    collected_phones.update(phones)  # Thêm phone mới vào tập hợp (không trùng lặp)
+                    self.emails.update(emails)  # Cập nhật tập hợp email
+                    self.phones.update(phones)  # Cập nhật tập hợp số điện thoại
+                    self.update_output.emit(self.emails, self.phones)  # Phát tín hiệu cập nhật
+                    text_content_list.append(BeautifulSoup(html_content, 'html.parser').get_text(separator=" ").strip())
+                text_content = "\n".join(text_content_list)
+                return text_content, list(collected_emails), None
+            except Exception as e:
+                self.status_update.emit(f"❌ Lỗi khi thu thập từ Facebook: {e}")
+                return None, [], None
         else:
             # Logic hiện tại cho các trang không phải Facebook
             html_content, error = self.main_window.fetch_html(url)
@@ -2150,7 +2257,11 @@ class GatherEmailsWorker(QObject):
                 return None, set(), None
             
             soup = BeautifulSoup(html_content, 'html.parser')
-            emails = self.main_window.extract_emails_from_html(html_content)
+            # emails = self.main_window.extract_emails_and_phones_from_html(html_content)
+            emails, phones = self.main_window.extract_emails_and_phones_from_html(html_content)
+            self.emails.update(emails)  # Cập nhật tập hợp email
+            self.phones.update(phones)  # Cập nhật tập hợp số điện thoại
+            self.update_output.emit(self.emails, self.phones)
             text_content = soup.get_text(separator=" ").strip()
             
             # Tìm liên kết tiếp theo nếu có XPath
@@ -2165,6 +2276,43 @@ class GatherEmailsWorker(QObject):
             
             return text_content, emails, next_url
 
+    def scroll_and_expand_posts(self, driver):
+        """Cuộn trang theo từng bài viết và mở rộng nội dung."""
+        see_more_xpath = """
+                //div[@data-tracking-duration-id and @data-actual-height and @data-mcomponent='MContainer' and @data-type='container' and contains(@class, 'm')]
+                /descendant::div[@data-type='container' and @data-focusable='true' and @data-tti-phase='-1' and @data-focusable='true' and @tabindex='0' and @data-action-id and @data-actual-height]
+                /descendant::div[@data-mcomponent='TextArea' and @data-type='text' and @data-focusable='true' and @data-tti-phase='-1' and @data-focusable='true' and @tabindex='0' and @data-action-id]
+                /div[@class='native-text' and @dir='auto']
+                """
+        try:
+            last_height = self.driver.execute_script("return document.body.scrollHeight")  # Chiều cao trang ban đầu
+            while True:
+                # Tìm tất cả các bài viết
+                posts = self.driver.find_elements(By.CSS_SELECTOR, "div.x1yztbdb.x1n2onr6.xh8yej3.x1ja2u2z")
+                
+                for post in posts:
+                    # Cuộn đến vị trí của bài viết
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", post)
+                    time.sleep(1)  # Đợi trang tải
+                    
+                    # Tìm và nhấp vào nút "Xem thêm" (nếu có)
+                    try:
+                        see_more_buttons = self.driver.find_elements(By.XPATH, see_more_xpath)
+                        see_more_button.click()
+                        time.sleep(1)  # Đợi nội dung tải
+                    except NoSuchElementException:
+                        pass  # Không có nút "Xem thêm"
+                
+                # Kiểm tra xem có cần cuộn tiếp không
+                new_height = self.driver.execute_script("return document.body.scrollHeight")
+                if new_height == last_height:
+                    break  # Hết trang để cuộn
+                last_height = new_height
+                time.sleep(2)  # Đợi trang tải sau khi cuộn
+
+        except Exception as e:
+            print(f"Lỗi trong quá trình cuộn và mở rộng bài viết: {e}")
+    
     def smooth_scroll_to_top(self):
         """Cuộn mượt lên đầu trang và kiểm tra đến khi đạt vị trí Y = 0."""
         self.driver.execute_script("""
@@ -2219,22 +2367,24 @@ class GatherEmailsWorker(QObject):
         time.sleep(3)
 
     def run(self):
-        """Bắt đầu quá trình thu thập email"""
         self.status_update.emit("♾️ Bắt đầu thu thập email...")
-
         try:
             executor = ThreadPoolExecutor(max_workers=self.max_workers)
+            print(f"Khởi tạo ThreadPoolExecutor với {self.max_workers} workers")
             futures = []
             initial_url = self.convert_to_mbasic(self.url)
-            current_url = initial_url
+            print(f"URL đã chuyển đổi: {initial_url}")
 
             if self.main_window.is_facebook_url(self.url):
-                # Xử lý Facebook: chỉ gọi fetch_page_content một lần với cuộn
+                print("Gọi fetch_page_content cho URL Facebook")
                 content, emails, _ = self.fetch_page_content(self.url)
+                print(f"Kết quả fetch: content={bool(content)}, emails={len(emails)}")
                 if content:
                     self.content += content + "\n\n"
                     self.emails.update(emails)
                     self.content_signal.emit(self.content)
+                else:
+                    self.status_update.emit("⚠️ Không lấy được nội dung từ Facebook.")
             elif self.use_sitemap:
                 sitemap_url = self.main_window.get_sitemap_url(self.url)
                 if sitemap_url:
@@ -2245,11 +2395,9 @@ class GatherEmailsWorker(QObject):
                     self.finished.emit(set())
                     return
             else:
-                futures.append(executor.submit(self.main_window.process_url, current_url))
+                futures.append(executor.submit(self.main_window.process_url, initial_url))
 
-            # Thu thập email từ các futures (cho trường hợp không phải Facebook)
             if futures:
-                # Theo dõi tiến trình
                 for future in as_completed(futures):
                     if not self.is_running:
                         break
@@ -2261,9 +2409,8 @@ class GatherEmailsWorker(QObject):
         finally:
             if self.driver:
                 self.driver.quit()
-                self.driver = None  # Đặt lại driver về None sau khi đóng
-        
-        if self.main_window.is_facebook_url(self.url):  # Gọi từ main_window
+                self.driver = None
+        if self.main_window.is_facebook_url(self.url):
             self.content_signal.emit(self.content)
         self.finished.emit(self.emails)
 
