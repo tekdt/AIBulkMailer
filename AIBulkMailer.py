@@ -26,13 +26,13 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFileDialog, QLineEdit, QTextEdit, QProgressBar, QComboBox, QTabWidget, QCheckBox, QMessageBox
 )
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread
+from PySide6.QtCore import Qt, QObject, pyqtSignal, QThread
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 import dns.resolver
-from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QIcon, QIntValidator
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QIcon, QIntValidator
 from lxml import html
 from selenium import webdriver
 from selenium.webdriver.common.by import By
