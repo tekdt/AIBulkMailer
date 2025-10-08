@@ -22,17 +22,16 @@ from mistralai import Mistral
 import groq
 import google.generativeai as genai
 from bs4 import BeautifulSoup
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFileDialog, QLineEdit, QTextEdit, QProgressBar, QComboBox, QTabWidget, QCheckBox, QMessageBox
 )
-from PySide6.QtCore import Qt, QObject, pyqtSignal, QThread
+from PySide6.QtGui import QIcon, QIntValidator
+from PySide6.QtCore import Qt, QObject, Signal, QThread, QTimer
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 import dns.resolver
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QIcon, QIntValidator
 from lxml import html
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -112,11 +111,11 @@ class SMTP_OAUTH(smtplib.SMTP):
             raise smtplib.SMTPAuthenticationError(code, message)
 
 class EmailSenderWorker(QObject):
-    success_signal = pyqtSignal(str)
-    error_signal = pyqtSignal(str)
-    log_signal = pyqtSignal(str)
-    progress_signal = pyqtSignal(int)
-    summary_signal = pyqtSignal(dict)
+    success_signal = Signal(str)
+    error_signal = Signal(str)
+    log_signal = Signal(str)
+    progress_signal = Signal(int)
+    summary_signal = Signal(dict)
 
     def __init__(self, parent, smtp_server, port, sender_email, password, subject, body, recipients, connection_security, reply_to=None, cc=None, bcc=None, use_oauth=False, oauth_config=None, refresh_token=None, auto_integration=False, ai_server=None, api_key=None, ai_prompt=None, model=None, min_delay=None, max_delay=None, local_ai_url=None):
         super().__init__()
@@ -493,8 +492,8 @@ def closeEvent(self, event):
     event.accept()
 
 class ContentGeneratorWorker(QObject):
-    result_signal = pyqtSignal(str)
-    error_signal = pyqtSignal(str)
+    result_signal = Signal(str)
+    error_signal = Signal(str)
 
     def __init__(self, ai_server, api_key, prompt, model, local_ai_url=None):
         super().__init__()
@@ -1981,10 +1980,10 @@ class BulkEmailSender(QWidget):
             pass
 
 class GatherEmailsWorker(QObject):
-    finished = pyqtSignal(set)  # Tín hiệu hoàn tất thu thập
-    content_signal = pyqtSignal(str)  # Tín hiệu trả về nội dung văn bản từ Facebook
-    status_update = pyqtSignal(str)  # Tín hiệu cập nhật trạng thái
-    update_output = pyqtSignal(set, set)
+    finished = Signal(set)  # Tín hiệu hoàn tất thu thập
+    content_signal = Signal(str)  # Tín hiệu trả về nội dung văn bản từ Facebook
+    status_update = Signal(str)  # Tín hiệu cập nhật trạng thái
+    update_output = Signal(set, set)
 
     def __init__(self, main_window, url, use_sitemap, max_workers, xpath, scroll_times=50, headless=False):
         super().__init__()
@@ -2419,7 +2418,7 @@ class GatherEmailsWorker(QObject):
         self.is_running = False
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+    app = QApplication(sys.argv)    
     app.setWindowIcon(QIcon(icon_path))  # Đặt biểu tượng cho ứng dụng
     window = BulkEmailSender()
     window.setWindowIcon(QIcon(icon_path))  # Đặt biểu tượng cho cửa sổ
